@@ -1,0 +1,132 @@
+---
+title: Media Ingestion & Transcoding
+sidebarTitle: Media Ingestion
+description: End-to-end media upload pipeline covering upload session creation, virus scanning, copyright fingerprinting, transcoding, DRM packaging, and content publication for video and audio.
+icon: arrow-up-from-bracket
+---
+
+import IdempotencyCallout from '/snippets/idempotency-callout.mdx'
+import ResidencyCallout from '/snippets/residency-immutable-callout.mdx'
+
+## Overview
+
+MCSP processes video and audio content through a shared, fully asynchronous ingestion pipeline. Both content types follow the same event-driven workflow from upload through to publication. The pipeline branches at the transcoding stage — video jobs use GPU-accelerated workers for high resolutions; audio jobs use CPU-only workers and complete significantly faster on average.
+
+The pipeline is designed for **progressive availability**: the lowest-quality variant of a content item is published as soon as it is ready (typically 2 minutes for video 360p, 30 seconds for audio 64 kbps) while higher-quality variants continue transcoding in parallel.
+
+<Info>
+  **Architecture note:** The pipeline is stateless at each stage. A stage consumes an upstream Kafka event, performs its work, and emits a downstream event. Stages fail independently and retry without restarting the entire pipeline. See [ADR-001](/decisions/adr-001-event-driven-pipeline) for the rationale for this design.
+</Info>
+
+---
+
+## Pipeline Stages
+
+| Stage | Service | Video Output | Audio Output |
+|---|---|---|---|
+| 0. Session & metadata | Upload Service | Session created; presigned URL issued; metadata saved as draft | Same |
+| 1. Multipart upload | Client → Object Storage | Raw file in staging bucket | Raw file in staging bucket |
+| 2. Format & size validation | Upload Ingestor | Reject if unsupported format or > 20 GB | Reject if unsupported format or > 2 GB |
+| 3. Virus scan | ClamAV / cloud malware scanner | `CLEAN` or `QUARANTINE` | `CLEAN` or `QUARANTINE` |
+| 4. Copyright fingerprint scan | AI Copyright Scanner | Video perceptual hash + audio fingerprint | Audio fingerprint (Audible Magic / in-house) |
+| 5. Transcoding orchestration | Kafka consumer → job dispatcher | One job per target resolution | One job per target bitrate |
+| 6. Transcoding | FFmpeg workers | MP4 encoded segments per resolution (GPU for 4K) | AAC-LC segments per bitrate (CPU-only) |
+| 7. HLS/DASH packaging | Shaka Packager | fMP4 + `.m3u8` + `.mpd` (video + audio tracks) | fMP4 + audio-only `.m3u8` + audio `.mpd` |
+| 8. DRM encryption | Shaka + CEK from KMS | Encrypted video+audio segments, PSSH boxes | Encrypted audio segments, PSSH boxes |
+| 9. Art generation | Art Generator | 3–5 thumbnail candidates (FFmpeg frame extract) | Cover art from creator-uploaded image |
+| 10. Storage routing | Residency Policy Engine | Write to global hot bucket or Nigeria residency bucket | Same |
+| 11. Metadata indexing | Elasticsearch Indexer | Document with `content_type: VIDEO` | Document with `content_type: AUDIO` |
+| 12. Publish | Content Service | Status → `PUBLISHED`; `media.published` emitted | Same |
+
+---
+
+## Step-by-Step Flow
+
+<Steps>
+  <Step title="Upload session creation">
+    Creator calls `POST /api/v1/uploads/session`. The Upload Service validates the JWT, queries the Residency Policy Engine, creates a session in Redis, persists metadata to Postgres, and returns `{ session_id, presigned_url, content_id }`.
+  </Step>
+  <Step title="Direct multipart upload">
+    The creator uploads the file directly to object storage via the presigned URL. The Upload Service is not in the data path. Resumable uploads are supported via multipart part tracking in the session state.
+  </Step>
+  <Step title="Pipeline initiation">
+    Object storage emits an S3 completion event. The Upload Service marks the session complete and emits `media.upload.initiated` to Kafka.
+  </Step>
+  <Step title="Format validation and virus scan">
+    The Upload Ingestor validates format and size limits (video ≤ 20 GB, audio ≤ 2 GB), runs the virus scan, and emits `media.upload.completed`. Quarantined files emit `media.upload.blocked` and are soft-deleted.
+  </Step>
+  <Step title="Copyright fingerprint scan">
+    The Copyright Scanner runs AI fingerprint matching (video perceptual hash + audio fingerprint against the known infringement database). Cleared content emits `media.copyright.cleared`. Matched content emits `media.upload.blocked` with the match reason.
+  </Step>
+  <Step title="Transcoding">
+    The Transcoding Orchestrator receives `media.copyright.cleared` and fans out one job per resolution (video) or bitrate variant (audio). Workers pull jobs from the queue and emit `media.transcoding.completed` per completed variant. Lower-quality variants are published first (progressive availability).
+  </Step>
+  <Step title="DRM packaging">
+    The DRM Packager receives `media.transcoding.completed`, retrieves the CEK from KMS, encrypts the segments using CMAF CENC/CBCS, injects PSSH boxes, writes the encrypted output to the appropriate hot or residency bucket, and emits `media.drm.packaged`.
+  </Step>
+  <Step title="Art generation and indexing">
+    In parallel with DRM packaging: the Art Generator produces thumbnails (video: frame extract) or processes cover art (audio). The Metadata Indexer writes the content document to Elasticsearch.
+  </Step>
+  <Step title="Publication">
+    The Content Service receives `media.drm.packaged`, updates the content status to `PUBLISHED`, and emits `media.published`. The Notification Service, ML Feature Store, and Search Indexer fan-out from this event.
+  </Step>
+</Steps>
+
+<ResidencyCallout />
+
+---
+
+## Kafka Topics Used
+
+| Topic | Stage | Direction |
+|---|---|---|
+| `media.upload.initiated` | Pipeline initiation | Produced by Upload Service |
+| `media.upload.completed` | Post-validation | Produced by Upload Ingestor |
+| `media.copyright.cleared` | Post-copyright scan | Produced by Copyright Scanner |
+| `media.transcoding.completed` | Per variant transcoded | Produced by Transcoding Cluster |
+| `media.published` | Publication | Produced by Content Service |
+
+---
+
+## Video Transcoding Targets
+
+| Resolution | Bitrate Target | Priority |
+|---|---|---|
+| 360p | 400 kbps video + 64 kbps audio | First — available within ~2 minutes |
+| 480p | 800 kbps video + 128 kbps audio | Second |
+| 720p | 2.5 Mbps video + 128 kbps audio | Third — most common playback tier |
+| 1080p | 5 Mbps video + 192 kbps audio | Fourth — HD tier |
+| 4K (2160p) | 16 Mbps video + 320 kbps audio | Last — GPU worker, qualifying content only |
+
+## Audio Transcoding Targets
+
+| Bitrate | Target | Priority |
+|---|---|---|
+| 64 kbps AAC-LC | Low bandwidth / mobile | First — available within ~30 seconds |
+| 128 kbps AAC-LC | Standard quality | Default playback tier |
+| 256 kbps AAC-LC | High quality | Ad-free subscribers |
+| 320 kbps AAC-LC | Lossless-equivalent | Premium tier; qualifying content only |
+
+---
+
+## Failure Handling
+
+<IdempotencyCallout />
+
+| Failure | Behaviour |
+|---|---|
+| **Virus scan positive** | File quarantined. `media.upload.blocked` emitted. Creator notified. No pipeline continuation. |
+| **Copyright match** | `media.upload.blocked` emitted. Pipeline stopped. Creator notified with category. |
+| **Transcoding job failure** | Retried with exponential backoff (max 5 attempts). After 5 failures, moves to dead-letter queue. Creator notified. |
+| **Partial transcode failure** | If 4K fails but 1080p succeeds, lower resolutions are published immediately. The failed variant is retried independently. |
+| **DRM packaging failure** | Job retried. If packaging fails for a variant, that variant is not published. Lower variants that have already been packaged remain available. |
+| **Spot instance interruption** | Worker checkpoint system limits lost progress to ≤ 30 seconds. Job resumes from last checkpoint, not from the beginning. |
+
+---
+
+## Related Pages
+
+- [Upload Service](/services/upload-service)
+- [DRM & Content Security](/pipelines/drm-content-security)
+- [Data Residency](/infrastructure/data-residency)
+- [ADR-001 — Event-Driven Pipeline](/decisions/adr-001-event-driven-pipeline)

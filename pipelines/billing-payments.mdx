@@ -1,0 +1,138 @@
+---
+title: Billing & Payments Pipeline
+sidebarTitle: Billing & Payments
+description: Subscription lifecycle billing, dual-currency payment processing (NGN/USD), revenue share calculation, ad revenue distribution, and payout orchestration.
+icon: credit-card
+---
+
+## Overview
+
+The Billing & Payments pipeline handles three independent revenue flows: subscription fees (processed monthly or on renewal), creator revenue share (distributed monthly), and ad impression revenue (settled every two weeks). All payment state transitions are recorded as events and the Temporal.io saga engine ensures compensating transactions on any failure in the multi-step payment flow.
+
+<Info>
+  **Architecture note:** Two separate payment processors are operated in parallel — Paystack for NGN-denominated accounts (Nigeria domestic) and Stripe for USD-denominated accounts (diaspora / international). FX conversion rates are locked at the start of each payout period to prevent mid-period rate fluctuations from affecting creator earnings. See [ADR-007](/decisions/adr-007-dual-currency-payout) for the full decision record.
+</Info>
+
+---
+
+## Subscription Billing Model
+
+The subscription lifecycle is owned by the [Subscription Service](/services/subscription-service). The billing pipeline triggers on the following events:
+
+| Trigger | Action |
+|---|---|
+| Trial to paid conversion | Charge first billing cycle. On failure → `PAST_DUE`. |
+| Monthly renewal (auto-renew) | Charge on renewal date. On failure → `PAST_DUE` → 7-day grace. |
+| Plan upgrade (mid-cycle) | Prorate remaining days. Charge difference immediately. |
+| Plan downgrade (mid-cycle) | Credit applied to next renewal — no immediate charge. |
+| Cancellation during trial | No charge. Immediately mark `CANCELED`. |
+| Cancellation after paid period | Access continues to period end. No refund by default. |
+
+---
+
+## Payment Processing Flow
+
+<Steps>
+  <Step title="Billing trigger">
+    Subscription Service generates a billing event at the scheduled renewal timestamp. The event is published to the `billing.charge.requested` internal topic.
+  </Step>
+  <Step title="Currency routing">
+    Billing Service reads the subscriber's `currency` field (NGN or USD). Routes to Paystack (NGN) or Stripe (USD) accordingly.
+  </Step>
+  <Step title="Charge attempt">
+    Billing Service calls the appropriate payment provider API using the subscriber's saved payment method token. The call is wrapped in a Temporal activity for automatic retry with exponential backoff (max 3 attempts, 1 h apart).
+  </Step>
+  <Step title="Success path">
+    On successful charge, Billing Service publishes `payment.processed` to the `payment.events` Kafka topic. Subscription Service consumes the event and transitions the subscription to `ACTIVE`.
+  </Step>
+  <Step title="Failure path — grace period">
+    On payment failure after all retries, Billing Service publishes `payment.failed` to `payment.events`. Subscription Service transitions to `PAST_DUE`. User is notified via Notification Service. Grace period: 7 days.
+  </Step>
+  <Step title="Grace period expiry">
+    If payment is not retried successfully within the grace period, the subscription is suspended. Content access is revoked. Notification Service sends a final access-revoked notification.
+  </Step>
+  <Step title="Audit record">
+    Every charge attempt (success or failure) writes an immutable audit record to the billing ledger table. Records are never deleted or updated — corrections are issued as new reversal records.
+  </Step>
+</Steps>
+
+---
+
+## Revenue Share Engine
+
+Creator revenue share is calculated monthly. The formula:
+
+$$
+\text{creator\_share} = \text{gross\_platform\_revenue} \times (1 - \text{platform\_fee}) \times \frac{\text{creator\_weighted\_plays}}{\text{total\_weighted\_plays}}
+$$
+
+Where `weighted_plays = plays × content_type_weight` and `content_type_weight` is configurable (default: 1.0 for both VIDEO and AUDIO).
+
+| Step | Calculation |
+|---|---|
+| Gross revenue collection | Sum all successful subscription charges for the payout calendar month |
+| Platform fee deduction | Deduct platform fee (configurable) and payment processing costs |
+| Distributable pool | `gross_revenue × (1 - fee_rate)` |
+| Per-creator share | `distributable_pool × (creator_plays / total_plays)` |
+| Minimum payout threshold | NGN 5,000 / USD 10 — sub-threshold amounts roll to next period |
+| FX lock | Exchange rate locked at `payout_period_start`. Applied if creator account currency differs from charge currency. |
+
+---
+
+## Currency Handling
+
+| Scenario | Handling |
+|---|---|
+| NGN subscriber, NGN creator | Paystack end-to-end. No FX conversion. |
+| USD subscriber, USD creator | Stripe end-to-end. No FX conversion. |
+| NGN subscriber, USD creator | NGN charged via Paystack. FX rate locked at period start converts NGN pool to USD equivalent at payout time. |
+| USD subscriber, NGN creator | USD charged via Stripe. Reverse FX conversion at payout. |
+| FX rate failure at period end | Billing pipeline suspends payout and alerts on-call. FX can be manually confirmed and payout resumed within 24 h. |
+
+---
+
+## Ad Revenue Distribution
+
+<Steps>
+  <Step title="Impression ingestion">
+    Ad Server reports impression events (`ad.impression.delivered`) with `content_id`, `creator_id`, `ad_id`, `revenue_amount`, and `currency`.
+  </Step>
+  <Step title="Aggregation">
+    Billing Service aggregates impression revenue per creator over the bi-weekly settlement period using a streaming aggregation query against TimescaleDB.
+  </Step>
+  <Step title="Settlement calculation">
+    Ad revenue distributable pool per creator = sum of all impression revenues attributed to content on the creator's channel, minus the platform ad commission.
+  </Step>
+  <Step title="Payout disbursement">
+    Ad revenue is paid out bi-weekly via the same Paystack/Stripe routing used for subscription revenue share.
+  </Step>
+</Steps>
+
+---
+
+## Kafka Topics Used
+
+| Topic | Direction | Purpose |
+|---|---|---|
+| `billing.charge.requested` | Internal (produced and consumed by Billing Service) | Subscription charge triggers |
+| `payment.events` | Produced | `payment.processed` and `payment.failed` events consumed by Subscription Service and Notification Service |
+| `ad.impression.delivered` | Consumed | Ad revenue attribution signals from Ad Server |
+
+---
+
+## Failure Handling
+
+| Failure | Behaviour |
+|---|---|
+| **Payment provider unreachable** | Temporal retries the provider call up to 3 times with exponential backoff. Billing event moved to a dead-letter partition after all retries exhaust. On-call alert triggered. |
+| **FX rate service unavailable** | Payout job pauses. Alert raised. Payout resumes automatically when FX service recovers or a manual rate override is applied. |
+| **Insufficient ad pool for minimum payout** | Sub-threshold amounts roll forward to the next settlement period. Creator receives a notification that the payout was deferred. |
+| **Duplicate billing event** | Each charge request carries a `idempotency_key = subscription_id:period_start`. Paystack and Stripe both honour idempotency keys. Duplicate events are discarded by the provider. |
+
+---
+
+## Related Pages
+
+- [Subscription Service](/services/subscription-service)
+- [ADR-007 — Dual Currency Payout](/decisions/adr-007-dual-currency-payout)
+- [ADR-008 — Saga Orchestration](/decisions/adr-008-saga-orchestration)

@@ -1,0 +1,118 @@
+---
+title: Design Principles
+sidebarTitle: Design Principles
+description: The 12 architecture principles that govern all engineering decisions on MCSP, with rationale, tradeoffs, and enforcement mechanisms.
+icon: compass-drafting
+---
+
+These principles are binding constraints on the MCSP architecture. Any engineering decision that conflicts with a principle requires a formal Architecture Decision Record documenting the exception and its justification.
+
+<AccordionGroup>
+  <Accordion title="1 — Cloud-Native by Design" icon="cloud">
+    Streaming workloads have highly irregular traffic patterns driven by viral content spikes that cannot be absorbed by statically provisioned infrastructure.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Vendor dependency risk; higher operational abstraction reduces fine-grained control. Mitigated by abstracting cloud provider APIs behind internal SDKs. |
+    | **Enforcement** | Infrastructure defined exclusively as code (Terraform/Pulumi). No manually provisioned resources permitted in production. IaC policies enforced via CI/CD pipeline gates. |
+  </Accordion>
+
+  <Accordion title="2 — Zero-Trust Security" icon="shield-halved">
+    Streaming platforms are high-value targets for piracy, credential stuffing, and content scraping. Every service-to-service call, every user request, and every admin action must be authenticated and authorised independently — implicit network trust is never assumed.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Token validation overhead adds latency. Mitigated by short-lived JWT caching at the API gateway and mTLS between internal services. |
+    | **Enforcement** | All API routes require Bearer token validation at the gateway. Istio/Linkerd service mesh enforces mTLS for east-west traffic. No service exposes an unauthenticated internal endpoint. |
+  </Accordion>
+
+  <Accordion title="3 — Event-Driven Architecture" icon="rotate">
+    Media processing, moderation, ML training, and storage tiering are long-running, non-deterministic workflows that cannot be bound to synchronous HTTP request cycles. Event streaming decouples producers from consumers, enabling independent scaling and failure isolation.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Eventual consistency introduces complexity in downstream reads. Compensating transactions required for failure handling. Developer cognitive overhead is higher than simple REST. |
+    | **Enforcement** | All stateful state transitions (upload complete, transcoding done, moderation decision) **must** emit domain events to Kafka. Synchronous calls are permitted only for real-time user-facing queries. |
+  </Accordion>
+
+  <Accordion title="4 — Idempotent Workflows" icon="arrows-rotate">
+    Distributed systems guarantee at-least-once delivery. Transcoding workers, billing processors, and moderation pipelines will receive duplicate messages during retries and failovers. Non-idempotent operations would cause double charges, duplicate transcodes, or duplicate content takedowns.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Idempotency keys consume additional storage. Deduplication logic adds latency to message consumption. |
+    | **Enforcement** | Every async worker checks an idempotency key (`contentId + operationType + timestamp`) before executing. Idempotency store: Redis with 24-hour TTL. |
+  </Accordion>
+
+  <Accordion title="5 — Multi-Region Readiness" icon="globe">
+    v1 targets Nigeria and the international diaspora. Retrofitting multi-region support onto a monolithic data model post-launch is prohibitively expensive — the architecture must assume multi-region from day one even if initial deployment is single-region.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Cross-region replication adds cost and consistency complexity. Active-active conflicts require CRDT or last-write-wins resolution. |
+    | **Enforcement** | Data models must document replication strategy at design time. No service may assume a single-region data store. Nigeria residency data is explicitly excluded from cross-region replication by policy. |
+  </Accordion>
+
+  <Accordion title="6 — Data Sovereignty as a First-Class Constraint" icon="flag">
+    Nigeria Data Residency is a billable product feature and a potential regulatory obligation. Application-layer-only enforcement is bypassable by misconfiguration — residency must be enforced at the infrastructure layer.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Residency-isolated storage cannot leverage global CDN edge caching. Residency content is served from a Nigeria origin only. |
+    | **Enforcement** | Object storage bucket policy (deny replication outside Nigeria region) enforced by cloud IAM. The Residency Policy Engine maintains its own audit log. Residency decisions are immutable post-upload. |
+  </Accordion>
+
+  <Accordion title="7 — Automated Storage Tiering" icon="layer-group">
+    At 8+ PB of content, manual storage management is operationally infeasible. Hot storage costs 5–10× cold storage per GB. Automating tier transitions based on view frequency directly reduces operating costs without degrading viewer experience.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Cold storage retrieval latency (seconds to minutes for archive tiers). Mitigated by pre-warming content when trending detection signals an upcoming spike. |
+    | **Enforcement** | Tiering engine runs on a scheduled cadence against configurable view-frequency thresholds. No human intervention permitted for routine transitions. Tier state is tracked in the metadata service — not inferred from storage location. |
+  </Accordion>
+
+  <Accordion title="8 — ML-First Personalisation" icon="brain">
+    Engagement and retention are directly correlated with recommendation quality at this scale. A rule-based recommendation system is insufficient — ML models must be the primary mechanism for feed generation, related content, and notification targeting.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | ML pipelines introduce training lag. Mitigated by real-time feature updates and a hybrid ranking approach (ML + recency signal). |
+    | **Enforcement** | The home feed API must not return results from a static rule engine without ML ranking. A/B testing framework gates all model deployments. Model performance metrics are dashboard-visible. |
+  </Accordion>
+
+  <Accordion title="9 — Separation of Control Plane and Data Plane" icon="split">
+    Admin operations must not share infrastructure with the viewer streaming data plane. A misconfigured admin operation must never impact playback availability.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Increases service count and operational surface area; requires separate deployment pipelines. |
+    | **Enforcement** | Admin dashboard, moderation tools, and platform management APIs deploy to a separate cluster (control plane). Cross-plane calls are made via well-defined, rate-limited internal APIs only. |
+  </Accordion>
+
+  <Accordion title="10 — Observability by Default" icon="chart-line">
+    Streaming platform failures — buffering spikes, transcoding backlogs, DRM license failures — must be detected within seconds, not discovered via user complaints. Observability must be built into every service from inception.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Telemetry data volume at 50,000 RPS is substantial. Sampling and aggregation strategies required to manage cost. |
+    | **Enforcement** | Every service **must** emit structured logs, RED metrics (Rate, Errors, Duration), and distributed traces. Services without telemetry fail deployment pipeline health checks. SLOs defined per service with automated alerting thresholds. |
+  </Accordion>
+
+  <Accordion title="11 — Graceful Degradation" icon="circle-half-stroke">
+    When dependent services fail (recommendation engine, moderation pipeline, payment service), the core playback experience must remain functional. Users must be able to watch content during partial system failures.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Degraded mode requires fallback logic in every client-facing service, increasing code complexity. |
+    | **Enforcement** | Circuit breakers on all inter-service calls. Recommendation service falls back to trending content on failure. Payment service failures return a graceful error and do not block streaming. Feature flags enable runtime degradation control. |
+  </Accordion>
+
+  <Accordion title="12 — Audit Completeness" icon="clipboard-list">
+    MCSP handles user data, financial transactions, content rights, and regulatory residency requirements. Every privileged action must be auditable for SOC 2, GDPR, NDPR, and internal governance.
+
+    | Attribute | Detail |
+    |---|---|
+    | **Tradeoffs** | Immutable audit logs grow indefinitely; partitioned and tiered to cold storage after 90 days. |
+    | **Enforcement** | All admin actions, moderation decisions, residency changes, and financial transactions write to an append-only audit log. The audit log store is write-only for all application principals — no `DELETE` or `UPDATE` is permitted. |
+  </Accordion>
+</AccordionGroup>

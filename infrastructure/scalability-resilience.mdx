@@ -1,0 +1,71 @@
+---
+title: Scalability & Resilience
+sidebarTitle: Scalability & Resilience
+description: Horizontal scaling strategy, media pipeline elasticity, multi-tier cache design, and disaster recovery targets for MCSP.
+icon: arrow-up-right-dots
+---
+
+## Horizontal Scaling Strategy
+
+All application-layer services are stateless and independently scalable. No in-process state is maintained — sessions live in Redis, not in pod memory.
+
+| Component | Scaling Mechanism |
+|---|---|
+| **Application services** | Kubernetes HPA on CPU utilisation (target 60%) and custom metrics (queue depth, RPS per pod) |
+| **Memory right-sizing** | Vertical Pod Autoscaler (VPA) manages resource requests per pod; no manual memory tuning required |
+| **Node provisioning** | Cluster Autoscaler adds nodes when pod scheduling fails |
+| **Node groups** | Separated by workload type: general compute, media processing (high-CPU), ML inference (GPU), data-layer (high-memory) |
+
+---
+
+## Media Pipeline Elasticity
+
+Transcoding is the most computationally elastic workload on the platform. Workers are decoupled from the front-end upload path — a spike in uploads increases queue depth, which triggers scale-out independently of application service load.
+
+- Queue depth > 100 triggers autoscaler to add workers in batches of 10
+- Spot/preemptible instances reduce transcoding cost by 60–70%
+- Worker checkpointing limits spot interruption loss to ≤ 30 seconds of transcoding progress
+- Audio and video job queues use separate autoscaling profiles (audio is CPU-only, lighter, faster)
+- A minimum of 2 workers is always running to absorb the first wave of uploads without cold-start delay
+
+---
+
+## Cache Strategy
+
+| Layer | Strategy | TTL |
+|---|---|---|
+| **CDN edge cache** | HLS/DASH segments and manifests cached at edge. `Cache-Control` headers set by origin. Invalidated on content update or deletion. | 24 hours (segments), 30 seconds (manifests) |
+| **API response cache** | Content metadata, creator profiles, and trending lists cached in Redis. Cache-aside: miss → DB read → cache write. | 1 hour (static metadata), 5 minutes (trending) |
+| **Session cache** | User sessions in Redis with sliding window TTL. Reduces DB auth checks to near-zero for active users. | 15 minutes (sliding) |
+| **ML inference cache** | Top-N recommendation results per user cached in Redis. Prevents model server hits on every home feed page load. | 5 minutes |
+
+---
+
+## Disaster Recovery Targets
+
+| Metric | Target |
+|---|---|
+| **RTO — full platform** | < 1 hour |
+| **RTO — playback path** | < 5 minutes (CDN + object storage remain available during app layer outage) |
+| **RPO — transactional data** | < 15 minutes (Postgres WAL streaming replication to standby) |
+| **RPO — media files** | Zero (S3-equivalent 11-nine durability + cross-AZ replication) |
+
+### Backup Strategy
+
+| Store | Backup Mechanism |
+|---|---|
+| **Postgres** | Continuous WAL archiving to a separate region + daily full snapshots. Residency data: WAL within Nigeria region only — no cross-region copy. |
+| **Object storage** | Cross-AZ replication within the primary region. Nigeria residency buckets: cross-AZ within Nigeria only — never cross-region. |
+| **Redis** | Daily RDB snapshots to object store. |
+| **Elasticsearch** | Daily snapshots to object store. |
+
+### Failover Behaviour
+
+- **Postgres primary failure**: Automated standby promotion (RTO < 30 seconds)
+- **CDN edge failure**: Automatic re-routing to next nearest PoP
+- **Kafka broker failure**: Topic replication factor ≥ 3 ensures no message loss; consumer groups resume from committed offsets
+- **Application layer regional failover**: Manual runbook-triggered in v1; automated failover is a v2 roadmap item
+
+<Warning>
+  Nigeria residency object storage is intentionally excluded from cross-region replication. A regional outage affecting MTN Cloud Nigeria will impact residency content availability. This is an accepted, documented tradeoff for the data sovereignty guarantee.
+</Warning>

@@ -1,0 +1,95 @@
+---
+title: "ADR-005: Automated Storage Tiering Engine"
+sidebarTitle: ADR-005 Storage Tiering
+description: Decision to implement an automated access-frequency-based tiering engine to move content between hot, cold, and archive tiers, reducing storage cost at scale.
+icon: layer-group
+---
+
+<Info>
+  **Status: Accepted** — Adopted for MCSP v1.0. Native S3 Lifecycle rules used for threshold-based transitions; custom tiering engine handles analytics-informed decisions.
+</Info>
+
+## Context
+
+At Year 3 projections, the platform stores approximately 8+ PB of encoded video and audio across all resolutions. Content access follows a power-law (Pareto) distribution: approximately 20% of content accounts for approximately 80% of playback requests. The long tail — content with very few or zero plays after the first few weeks of publication — accumulates indefinitely if stored in high-performance object storage.
+
+The cost difference between Amazon S3 Standard (hot), S3 Standard-IA (cold), and S3 Glacier (archive) tiers is substantial at petabyte scale. Storing 8 PB entirely on S3 Standard is not cost-viable.
+
+The design must satisfy two constraints:
+1. Tiering decisions must not surface to end users — all CDN URLs must resolve regardless of tier.
+2. Archive retrieval latency is acceptable only for long-tail content where a 24–48 h restore is tolerable (i.e., content that has received no playback in 90+ days can afford a delay on the rare occasion it is requested again).
+
+---
+
+## Decision
+
+Implement an automated tiering engine that transitions content across three tiers based on access-frequency signals from the Engagement Service:
+
+| Tier | Storage class | Transition threshold |
+|---|---|---|
+| **Hot** | S3 Standard | < 100 views in the last 30 days → candidate for cold |
+| **Cold** | S3 Standard-IA | Active but infrequent. < 10 views in last 90 days → candidate for archive |
+| **Archive** | S3 Glacier Flexible Retrieval | Inactive long-tail. Restore required before playback. |
+| **Nigeria Residency** | S3 af-south-1 Standard | Always Hot regardless of access frequency (residency requirement) |
+
+The tiering engine is a background job (runs daily at 02:00 UTC) that:
+1. Queries the view-count aggregate from the analytics store (TimescaleDB)
+2. Identifies content meeting down-tier thresholds
+3. Issues S3 Copy or `MoveObject` requests to transition objects between tiers
+4. Updates the content metadata record with the current tier and restore status
+
+When a client requests a CDN URL for archived content, the Playback Service checks the tier field. If the content is in `ARCHIVE` tier, it initiates a Glacier restore (1–12 hour standard restore) and returns an HTTP 202 (Accepted) with a `Retry-After` header indicating estimated restore completion.
+
+Nigeria-resident content (`residency: NG`) is excluded from cold and archive transitions regardless of access frequency — this is a hard constraint from the residency IAM policy design.
+
+---
+
+## Alternatives Considered
+
+<AccordionGroup>
+  <Accordion title="Alternative A: Manual tiering (creator/admin-driven)">
+    **Description:** Provide a dashboard control for creators or admins to manually move content to cold/archive tiers.
+
+    **Why rejected:** At 3M+ content items, manual tiering is not operationally viable. Human-driven processes at this scale introduce delays, inconsistency, and require a dedicated operations team function. Automated threshold-based tiering eliminates the operational burden entirely.
+  </Accordion>
+  <Accordion title="Alternative B: S3 Lifecycle policies only (no custom engine)">
+    **Description:** Configure S3 Lifecycle rules to automatically transition objects based on age (e.g., objects older than 90 days move to Standard-IA).
+
+    **Why partially adopted but not sufficient alone:** Age-based rules do not distinguish between a 90-day-old viral video (10M plays, should stay hot) and a 90-day-old obscure upload (5 plays, should archive). Access frequency signals are required for accurate tier assignment. S3 Lifecycle rules are used as a safety net (objects not transitioned by the engine within 180 days are caught by a Lifecycle rule), but the primary tiering driver is the custom analytics-informed engine.
+  </Accordion>
+  <Accordion title="Alternative C: Intelligent-Tiering (S3 Intelligent-Tiering class)">
+    **Description:** Store all objects in S3 Intelligent-Tiering, which automatically moves objects between access tiers based on access patterns.
+
+    **Why partially adopted but not primary:** S3 Intelligent-Tiering has per-object monitoring charges. At 8 PB with millions of small-to-medium files, monitoring costs exceed the saving for small objects (less than 128 KB). Applied selectively to thumbnail and small metadata files. Not used for video/audio segments where the custom engine is more cost-effective.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Consequences
+
+- Year 3 estimated storage cost reduction: 40–60% compared to all-Standard storage, based on typical power-law access distributions.
+- Archive restore latency (1–12 hours) requires client-visible status communication. The Playback Service's HTTP 202 + `Retry-After` pattern handles this at the API layer.
+- Nigeria-resident content permanently maintained at hot tier introduces a higher per-GB cost for that content class. This is a regulatory compliance cost, not an optimisation target.
+- The tiering engine requires a dependency on the analytics store (TimescaleDB). If the analytics store is unavailable for the daily job run, tiering is deferred to the next run. No tier transition happens during analytics store outages.
+
+---
+
+## Tradeoffs
+
+| Dimension | All-Standard | Lifecycle (age-only) | Custom Engine (selected) |
+|---|---|---|---|
+| Accuracy of tiering | N/A | Low (age ≠ relevance) | High (access-frequency-driven) |
+| Year 3 cost | Highest | Reduced | Lowest |
+| Operational effort | Lowest | Low | Medium (engine maintenance) |
+| Archive restore UX | Not applicable | HTTP 202 pattern | HTTP 202 pattern |
+| Nigeria content | Hot | Excluded from Lifecycle | Excluded from tiering |
+
+---
+
+## Related
+
+- [Data Residency](/infrastructure/data-residency)
+- [Scalability & Resilience](/infrastructure/scalability-resilience)
+- [ADR-003 — Nigeria Residency](/decisions/adr-003-nigeria-residency-iam)
+- [Reference: Storage Model](/reference/storage-model)

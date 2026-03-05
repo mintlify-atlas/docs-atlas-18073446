@@ -1,0 +1,119 @@
+---
+title: Bandwidth & Traffic Profile
+sidebarTitle: Bandwidth Profile
+description: Year 1 and Year 3 traffic projections, peak and sustained bandwidth estimates, CDN egress breakdown, and Nigeria-specific traffic assumptions.
+icon: chart-line
+---
+
+## Traffic Modelling Assumptions
+
+All projections are based on the following modelling parameters:
+
+- **Peak-to-average ratio**: 3× (peak concurrent streams at prime time = 3× daily average)
+- **Video average bitrate at peak**: 4 Mbps (HLS adaptive bitrate; mix of 720p and 1080p dominant quality tier)
+- **Audio average bitrate at peak**: 192 kbps (stereo AAC-LC)
+- **Nigeria content fraction**: 10% of total catalogue; 15% of total playback sessions
+- **Nigeria PoP offload rate**: 70% (30% cache miss served from af-south-1 origin)
+- **Global CDN offload rate**: 85% (15% cache miss rate for long-tail content)
+
+---
+
+## Year 1 Traffic Projections
+
+| Metric | Value |
+|---|---|
+| **Monthly active users** | 500,000 |
+| **Daily active users** | 150,000 |
+| **Average sessions per DAU per day** | 1.8 |
+| **Average session duration** | 35 minutes |
+| **Average concurrent streams (sustained)** | 55,000 |
+| **Peak concurrent streams** | 150,000 |
+| **Total hours streamed per day** | 8.75M hours |
+| **Total hours streamed per month** | ~265M hours |
+
+### Year 1 Bandwidth Estimates
+
+| Stream type | Concurrent streams (peak) | Avg bitrate | Required egress |
+|---|---|---|---|
+| Video (720p–1080p) | 130,000 | 4 Mbps | ~520 Gbps |
+| Video (4K/HDR, premium) | 5,000 | 20 Mbps | ~100 Gbps |
+| Audio only | 15,000 | 192 kbps | ~2.9 Gbps |
+| **Total peak egress** | **150,000** | | **~623 Gbps** |
+
+---
+
+## Year 3 Traffic Projections
+
+| Metric | Value |
+|---|---|
+| **Monthly active users** | 2,500,000 |
+| **Daily active users** | 750,000 |
+| **Average sessions per DAU per day** | 2.0 |
+| **Average session duration** | 38 minutes |
+| **Average concurrent streams (sustained)** | 190,000 |
+| **Peak concurrent streams** | 500,000 |
+| **Total hours streamed per day** | 47.5M hours |
+| **Total hours streamed per month** | ~1.4 billion hours |
+
+### Year 3 Bandwidth Estimates
+
+| Stream type | Concurrent streams (peak) | Avg bitrate | Required egress |
+|---|---|---|---|
+| Video (720p–1080p) | 400,000 | 4 Mbps | ~1.6 Tbps |
+| Video (4K/HDR, premium) | 50,000 | 20 Mbps | ~1.0 Tbps |
+| Audio only | 50,000 | 192 kbps | ~9.6 Gbps |
+| **Total peak egress** | **500,000** | | **~2.6 Tbps** |
+
+---
+
+## Nigeria-Specific Traffic
+
+| Metric | Year 1 | Year 3 |
+|---|---|---|
+| Nigeria DAU | 45,000 (30% of total) | 200,000 (27% of total) |
+| Peak concurrent streams (Nigeria) | 50,000 | 150,000 |
+| Percentage served from MTN PoP | 70% | 75% |
+| Nigeria peak egress (MTN PoP) | ~140 Gbps | ~420 Gbps |
+| Nigeria peak egress (af-south-1 origin) | ~42 Gbps | ~105 Gbps |
+
+<Note>
+  Nigeria traffic projections assume 70% CDN PoP offload at Year 1. Increasing the MTN PoP cache capacity by Year 3 (target 75% offload) requires capacity planning with MTN networks. Origin egress from `af-south-1` is significantly more expensive per GB than CDN delivery, making PoP offload rate a cost-critical metric.
+</Note>
+
+---
+
+## API Traffic Projections
+
+| API tier | Year 1 peak RPS | Year 3 peak RPS |
+|---|---|---|
+| Auth Service (token validation) | 12,000 | 50,000 |
+| Content Service (feed, search) | 8,000 | 35,000 |
+| Playback Service (manifest + DRM token) | 5,000 | 20,000 |
+| Engagement Service (likes, views, history) | 25,000 | 100,000 |
+| Upload API | 200 | 800 |
+| **Total platform API** | **~50,000 RPS** | **~206,000 RPS** |
+
+---
+
+## Bandwidth Cost Model (Indicative)
+
+| Delivery path | Rate basis | Year 1 monthly estimate | Year 3 monthly estimate |
+|---|---|---|---|
+| CloudFront CDN (global) | CDN committed pricing | ~$180K | ~$720K |
+| MTN PoP (Nigeria) | MTN commercial terms | Volume-based (contract) | Volume-based (contract) |
+| af-south-1 S3 egress | $0.09/GB (standard) | ~$18K | ~$60K |
+| us-east-1 API egress | $0.09/GB | ~$8K | ~$30K |
+| **Total monthly data cost (indicative)** | | **~$206K** | **~$810K** |
+
+<Info>
+  All cost estimates are indicative and based on public list pricing. Actual costs will depend on committed use discounts, CDN negotiated rates, and actual traffic profiles. CDN costs at Year 3 scale are typically subject to significant volume negotiation.
+</Info>
+
+---
+
+## Related Pages
+
+- [Scale Assumptions](/overview/scale-assumptions)
+- [Infrastructure & Network](/architecture/infrastructure-network)
+- [Scalability & Resilience](/infrastructure/scalability-resilience)
+- [ADR-002 — CDN-First Delivery](/decisions/adr-002-cdn-first-delivery)

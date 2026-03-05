@@ -1,0 +1,72 @@
+---
+title: Notification Service
+sidebarTitle: Notification Service
+description: Push, email, and in-app notification dispatch for creator events, moderation outcomes, subscription changes, and viewer interactions.
+icon: bell
+---
+
+## Purpose
+
+The Notification Service consumes domain events from Kafka and dispatches notifications to users and creators across three channels: push (APNs/FCM), email (transactional ESP), and in-app (persistent notification feed). It is a pure fan-out consumer — it does not own business logic for determining *whether* a notification should be sent, only *how* and *when* to deliver it.
+
+---
+
+## Responsibilities
+
+| Responsibility | Detail |
+|---|---|
+| **Push notifications** | Delivers mobile push via APNs (iOS) and FCM (Android). Tokens registered at app login and de-registered on logout. Delivery failures are retried up to 3 times with jitter before dropping. |
+| **Email dispatch** | Transactional email via a third-party ESP (e.g., SendGrid, AWS SES). Template-rendered HTML/text emails sent for: subscription confirmations, payment receipts, moderation decisions, and creator milestone alerts. |
+| **In-app notifications** | Notification records written to Postgres and surfaced via a paginated API. Users see a notification badge and an in-app feed. Read status is tracked per notification per user. |
+| **Creator alerts** | New comment, new subscriber, content moderation outcome, and payout processed notifications delivered to creators. |
+| **Viewer alerts** | New upload from subscribed creator. Subscription renewal reminder. |
+| **Preference management** | Users can configure notification channel preferences and opt out of non-essential categories. Preferences stored in Postgres; checked before dispatch. |
+
+---
+
+## API Surface
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/notifications` | Bearer | Paginated in-app notification feed |
+| `PATCH` | `/api/v1/notifications/{notificationId}/read` | Bearer | Mark notification as read |
+| `DELETE` | `/api/v1/notifications/all` | Bearer | Clear all notifications |
+| `GET` | `/api/v1/notifications/preferences` | Bearer | Get notification channel preferences |
+| `PATCH` | `/api/v1/notifications/preferences` | Bearer | Update notification preferences |
+
+---
+
+## Data Owned
+
+| Store | Content |
+|---|---|
+| **Postgres** | `notifications` (id, user_id, type, title, body, read, created_at), `notification_preferences` (user_id, push_enabled, email_enabled, category_opt_outs[]) |
+
+---
+
+## Kafka Topics
+
+| Topic | Action |
+|---|---|
+| `media.published` | **Consumed** — triggers "new upload" notification to creator subscribers |
+| `engagement.subscription.changed` | **Consumed** — triggers "new subscriber" notification to creators |
+| `moderation.flagged` | **Consumed** — triggers moderation decision notification to creators |
+| `payment.processed` | **Consumed** — triggers payment confirmation notification to subscribers |
+
+---
+
+## Failure Behaviour
+
+| Failure | Behaviour |
+|---|---|
+| **Push delivery failure** | Retried 3 times with exponential jitter. After 3 failures, the notification is dropped and a log entry is written. Permanent device token failures (APNs `BadDeviceToken`) trigger automatic token de-registration. |
+| **ESP (email) unavailable** | Email queue backed up in an internal retry queue. Retried for up to 24 hours before alerting on-call. Non-critical path — no streaming impact. |
+| **Notification Service unavailable** | Kafka consumer lag increases. Notifications are delayed but not lost — topics have sufficient retention (7 days) to catch up on recovery. No streaming impact. |
+
+---
+
+## Related Pages
+
+- [Engagement Service](/services/engagement-service)
+- [Subscription Service](/services/subscription-service)
+- [Content Moderation Pipeline](/pipelines/content-moderation)

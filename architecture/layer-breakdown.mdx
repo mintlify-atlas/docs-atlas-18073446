@@ -1,0 +1,102 @@
+---
+title: Layer Breakdown
+sidebarTitle: Layer Breakdown
+description: Responsibilities, core services, scaling model, and failure domains for every architectural layer in MCSP.
+icon: layer-group
+---
+
+import ZeroTrust from '/snippets/zero-trust-callout.mdx'
+import ObservabilityGate from '/snippets/observability-gate-callout.mdx'
+
+## Edge Layer
+
+The edge layer is the exclusive entry point for all client traffic. It provides two distinct paths: CDN-mediated media segment delivery and API Gateway-mediated application request routing.
+
+| Attribute | Detail |
+|---|---|
+| **Responsibilities** | DDoS absorption, WAF policy enforcement, TLS termination, CDN caching of media segments and manifests, geographic routing, API rate limiting, JWT pre-validation |
+| **Core Services** | WAF (AWS Shield Advanced / Cloudflare Enterprise), CDN (CloudFront / Akamai with MTN PoP integration), API Gateway (Kong or AWS API Gateway with custom authoriser) |
+| **Scaling Model** | CDN scales elastically per edge node. API Gateway horizontally scales behind a load balancer. WAF is managed/serverless. |
+| **Failure Domains** | CDN edge node failure routes to the next nearest PoP. API Gateway node failure is handled by load balancer health checks. WAF failure open-circuits to allow traffic — availability is prioritised over WAF enforcement during an outage, with immediate alerting. |
+
+---
+
+## Application Layer
+
+All business logic services run as independently deployable microservices. Services are stateless — all session state is held in Redis, not in process memory.
+
+| Attribute | Detail |
+|---|---|
+| **Core Services** | User & Auth Service, Upload Service, Content Service, Engagement Service, Playback Service, Subscription Service, Creator Dashboard, Notification Service, Admin Control Plane |
+| **Scaling Model** | Kubernetes HPA on CPU (target 60%) and custom metrics (request queue depth). Each service scales independently. The Engagement Service uses Redis-buffered write batching to handle viral content write amplification. |
+| **Failure Domains** | Individual service failure is circuit-broken. Playback Service maintains a 3-replica minimum with a dedicated node pool. Auth Service failure degrades to cached session validation for up to 5 minutes. Engagement Service failures queue writes client-side for retry; view counts tolerate brief outages via eventual consistency. |
+
+<ZeroTrust />
+
+---
+
+## Media Processing Layer
+
+The media processing layer is a fully asynchronous pipeline triggered by upload completion events. Video and audio jobs share the same Kafka-backed job queue and worker pool — content-type metadata in the job descriptor determines the processing branch applied at the transcoding stage.
+
+| Attribute | Detail |
+|---|---|
+| **Responsibilities** | Format validation, virus scanning, AI copyright fingerprinting, multi-resolution video transcoding, multi-bitrate audio transcoding, HLS/DASH packaging, DRM encryption, thumbnail and cover art generation, metadata indexing |
+| **Core Services** | Upload Ingestor, Copyright Scanner (perceptual hash + audio fingerprint), Transcoding Cluster (FFmpeg — GPU for 4K video, CPU-only for audio), DRM Packager (Shaka), Art/Thumbnail Generator, Metadata Indexer |
+| **Scaling Model** | Audio and video job queues use separate autoscaling profiles. Spot/preemptible instances are used for transcoding (60–70% cost reduction). A minimum of 2 workers is always running to prevent cold-start latency. |
+| **Failure Domains** | Failed jobs retry with exponential backoff (max 5 attempts) before moving to a dead-letter queue with creator notification. Partial failures (e.g., 4K transcode fails while 1080p succeeds) publish available variants immediately without blocking lower resolutions. |
+
+---
+
+## AI / ML Layer
+
+The ML layer operates on two timescales: offline batch training (daily/weekly) and online real-time inference (sub-100 ms per request).
+
+| Attribute | Detail |
+|---|---|
+| **Responsibilities** | Behavioural event collection, feature engineering, offline model training, online recommendation serving, AI content moderation |
+| **Core Services** | Event Collector (Kafka consumer), Feature Store (Feast / Tecton), Offline Trainer (Spark on Kubernetes + Ray), Model Server (Triton / TorchServe), AI Moderation Pipeline |
+| **Scaling Model** | Model server scales horizontally behind a load balancer. GPU nodes dedicated to inference; CPU nodes for feature serving. Training cluster scales on-demand for scheduled jobs. |
+| **Failure Domains** | Recommendation inference failure falls back to the trending content feed. AI moderation failure queues content for human review — content is never auto-approved during an outage. Feature store unavailability degrades to cached features. |
+
+---
+
+## Data Layer
+
+Each data class uses a purpose-fit store. No store is shared across unrelated data domains.
+
+| Store | Purpose | Failure Mode |
+|---|---|---|
+| **PostgreSQL (multi-AZ, read replicas)** | Users, content metadata, subscriptions, transactions | Primary failure triggers automated standby failover (RTO < 30 seconds) |
+| **Object Storage (S3-compatible)** | Hot, cold, and residency-isolated media file buckets | 11-nine durability; cross-AZ replication. Residency buckets never replicate cross-region. |
+| **Elasticsearch** | Full-text content search and discovery | Failure degrades search — not on the playback critical path |
+| **TimescaleDB / ClickHouse** | Analytics time-series, creator metrics | Degraded analytics; no impact on streaming |
+| **Redis Cluster** | Sessions, idempotency keys, engagement counters, ML inference cache | Failure degrades performance but not correctness — sessions fall back to DB validation |
+
+---
+
+## Control Plane
+
+The control plane is operationally isolated from the viewer-facing data plane with its own deployment, network boundaries, and scaling policies.
+
+| Attribute | Detail |
+|---|---|
+| **Core Services** | Admin Control Plane API, Moderation Dashboard, Residency Policy Engine, Ad Operations Console, Audit Log Service |
+| **Scaling Model** | Scaled conservatively — handles significantly lower RPS than the data plane. Admin operations are rate-limited to prevent bulk operational errors. |
+| **Failure Domains** | Control plane failure does not impact viewer streaming. Moderation pipeline failure routes all flagged content to a holding queue — content is not auto-approved during an outage. |
+
+---
+
+## Observability Layer
+
+<ObservabilityGate />
+
+| Component | Role |
+|---|---|
+| **Loki / ELK Stack** | Centralised structured log aggregation and search |
+| **Prometheus + Grafana** | System and application metrics; SLO dashboards |
+| **Jaeger / Tempo** | Distributed request tracing (1–5% sampled on high-volume paths) |
+| **PagerDuty** | Alerting and on-call routing |
+| **Append-only Audit Store** | DynamoDB (no-delete policy) or Kafka Compacted Topic — compliance-grade immutable record |
+
+Metrics are retained at high resolution for 7 days and downsampled for 1 year. Audit log records are partitioned and tiered to cold storage after 90 days but are never deleted.

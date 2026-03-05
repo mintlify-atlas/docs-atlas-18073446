@@ -1,0 +1,145 @@
+---
+title: ML Recommendation & Personalisation
+sidebarTitle: ML Recommendations
+description: Behavioural signal collection, feature store design, two-stage retrieval and ranking model architecture, A/B testing framework, and inference pipeline.
+icon: brain
+---
+
+## Overview
+
+The recommendation system is a two-stage pipeline: a lightweight retrieval model narrows the full catalogue to 500 candidates, then a ranking model orders those candidates using rich per-user feature vectors. The full pipeline must complete within a 150 ms budget per request. Features are served from Redis (online, low-latency) and updated from Kafka (near-real-time event stream).
+
+<Info>
+  **Architecture note:** The two-tower neural network was chosen over simpler alternatives specifically for cold-start handling and catalogue size. At 3 million+ content items, brute-force similarity search is not viable at inference time. See [ADR-006](/decisions/adr-006-two-tower-ml) for the full decision record.
+</Info>
+
+---
+
+## Behavioural Signal Collection
+
+All engagement events are produced by the Engagement Service to the `user.engagement.events` Kafka topic. The Event Collector service consumes this topic and writes enriched events to the Feature Store's offline store (Parquet on object storage) and increments online feature counters in Redis.
+
+| Event | Content Types | Signal Weight |
+|---|---|---|
+| `media_completed` (>90% consumed) | Video + Audio | Strongest positive |
+| `media_replay` | Video + Audio | Strong positive |
+| `media_liked` | Video + Audio | Strong positive |
+| `media_shared` | Video + Audio | Strong positive |
+| `media_added_to_playlist` | Video + Audio | Strong affinity |
+| `media_started` (any consumption) | Video + Audio | Weak positive |
+| `media_paused_early` (under 30% consumed) | Video + Audio | Mild negative |
+| `media_disliked` | Video + Audio | Moderate negative |
+| `media_skipped` (auto-play skipped) | Video + Audio | Moderate negative |
+| `subscription_to_creator` | Video + Audio | Strong affinity |
+
+---
+
+## Feature Store Design
+
+The Feature Store (Feast or Tecton) maintains two feature classes:
+
+**Online features** (Redis — low latency, served at inference):
+
+| Feature Group | Features |
+|---|---|
+| **User** | `recent_media_7d`, `top_categories_7d`, `avg_session_duration`, `preferred_language`, `preferred_content_type` (VIDEO/AUDIO/MIXED), `subscriber_count` |
+| **Content** | `play_count_24h`, `like_ratio`, `completion_rate`, `category`, `duration`, `content_type`, `creator_subscriber_count`, `publish_age_hours` |
+| **Trending** | `trending_score = views_1h × recency_weight × engagement_multiplier` — refreshed every 15 minutes |
+
+**Offline features** (Parquet on object storage — used for training):
+
+| Feature Group | Features |
+|---|---|
+| **User-Content Interaction** | Historical watch sequences, long-term category affinity, creator affinity scores |
+
+---
+
+## Model Architecture
+
+### Stage 1: Retrieval
+
+A two-tower neural network (user embedding tower + content embedding tower) trained offline retrieves the top 500 candidate items from the full catalogue.
+
+- User embedding computed online at inference time (sub-10 ms via Feature Store lookup)
+- Content embeddings pre-computed offline and indexed in an ANN index (FAISS or ScaNN)
+- `content_type` is a feature in the content tower — a single retrieval model handles video and audio without separate models
+- New content enters the ANN index 10–30 minutes after publish (embedding computation lag)
+
+### Stage 2: Ranking
+
+A deep learning ranking model (DLRM or similar) scores the 500 retrieval candidates against the user's feature vector.
+
+- Applies a `preferred_content_type` signal: users who predominantly consume audio see audio ranked higher
+- A configurable diversity parameter modulates cross-type discovery — surfacing audio to video-first users and vice versa
+- Total inference budget for both stages: < 100 ms
+
+---
+
+## Inference Pipeline Flow
+
+<Steps>
+  <Step title="Home feed request">
+    Client calls `GET /api/v1/content/feed`. Content Service receives the request and calls the Model Server (Triton / TorchServe) via gRPC.
+  </Step>
+  <Step title="Online feature lookup">
+    Model Server fetches the user's online feature vector from the Feature Store (Redis). Feature lookup target: < 5 ms.
+  </Step>
+  <Step title="Retrieval — ANN search">
+    User embedding is computed. ANN search across the pre-indexed content embedding space returns the top 500 candidate IDs. Target: < 10 ms.
+  </Step>
+  <Step title="Ranking">
+    DLRM model scores all 500 candidates using the combined user + content feature vectors. Returns a ranked list. Target: < 80 ms.
+  </Step>
+  <Step title="Feed response">
+    Content Service fetches metadata for the top N ranked content IDs from Postgres/Redis cache and returns the personalised feed to the client.
+  </Step>
+</Steps>
+
+---
+
+## Kafka Topics Used
+
+| Topic | Direction | Purpose |
+|---|---|---|
+| `user.engagement.events` | Consumed | Behavioural signals for feature updates and training data |
+| `media.published` | Consumed | New content added to embedding index pipeline |
+
+---
+
+## Model Deployment and A/B Testing
+
+<Steps>
+  <Step title="Training">
+    Offline training runs on a Spark + Ray cluster on a daily or weekly schedule. Training ingests the offline feature store (Parquet). Models are versioned in MLflow.
+  </Step>
+  <Step title="Canary deployment">
+    New model version deployed to a canary pod set receiving 5% of traffic. Evaluated against the incumbent on CTR, completion rate, and session depth metrics for 48 hours.
+  </Step>
+  <Step title="Significance gate">
+    Statistical significance thresholds (p < 0.05, minimum detectable effect) must be met before promotion. Automated by the A/B testing framework.
+  </Step>
+  <Step title="Bias audit">
+    Monthly bias audit on model outputs. The model must not exhibit statistically significant content or creator bias by demographic or language group. Audit failure blocks promotion.
+  </Step>
+  <Step title="Full promotion">
+    Model promoted to 100% traffic. Previous version retained for rollback.
+  </Step>
+</Steps>
+
+---
+
+## Failure Handling
+
+| Failure | Behaviour |
+|---|---|
+| **Model Server unavailable** | Content Service falls back to the trending content list. Graceful degradation per [Principle 11](/overview/design-principles). |
+| **Feature Store unavailable** | Model Server degrades to cached features (last known values). Recommendation quality degrades but requests succeed. |
+| **ANN index stale** | New content published in the last 10–30 minutes is not yet in the index. This is expected behaviour — new content appears in trending and notification feeds before it enters personalised recommendations. |
+
+---
+
+## Related Pages
+
+- [Engagement Service](/services/engagement-service)
+- [Content Service](/services/content-service)
+- [ADR-006 — Two-Tower ML](/decisions/adr-006-two-tower-ml)

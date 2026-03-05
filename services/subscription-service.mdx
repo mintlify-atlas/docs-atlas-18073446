@@ -1,0 +1,83 @@
+---
+title: Subscription Service
+sidebarTitle: Subscription Service
+description: Subscription plan lifecycle state machine, billing coordination, entitlement management, and grace period handling.
+icon: credit-card
+---
+
+## Purpose
+
+The Subscription Service manages the full lifecycle of a subscriber's relationship with MCSP — from trial through active subscription, payment failures, cancellation, and expiry. It owns the subscription state machine and coordinates with the Billing Engine for all payment intents, but does not process payment data directly. Card data never touches MCSP infrastructure.
+
+---
+
+## Responsibilities
+
+| Responsibility | Detail |
+|---|---|
+| **Subscription state machine** | Transitions subscriptions through `TRIALING → ACTIVE → PAST_DUE → CANCELED / EXPIRED`. Applies partial entitlement rules during the grace period (ad-free retained; premium features locked). |
+| **Plan management** | Stores available subscription plans (free, ad-free, Nigeria Residency premium). Platform Admins manage plan definitions via the Admin Control Plane. |
+| **Billing Engine coordination** | Calls the Billing Engine via synchronous gRPC to create payment intents for new subscriptions, renewals, and plan upgrades. The Subscription Service does not call payment processors directly. |
+| **Entitlement enforcement** | Returns the current subscription tier and entitlements to the Playback Service on demand. Entitlement state is the source of truth for access control during playback. |
+| **Grace period handling** | On first payment failure, sets status to `PAST_DUE` with a 7-day grace period. During grace, the subscriber retains the ad-free entitlement but loses access to premium features. On day 8 without recovery, status moves to `EXPIRED`. |
+| **Cancellation and expiry** | User-initiated cancellation retains access until the end of the current billing period. Expiry reverts the account to free-tier entitlements. |
+
+---
+
+## Subscription Lifecycle
+
+| State | Description |
+|---|---|
+| `TRIALING` | 14-day free trial on first paid subscription. No charge. Converts to `ACTIVE` on day 14. |
+| `ACTIVE` | Subscription paid and current. Full entitlements granted. |
+| `PAST_DUE` | Payment failed at renewal. 7-day grace period. Partial entitlements. |
+| `CANCELED` | User-initiated. Access retained until billing period end. |
+| `EXPIRED` | Billing period ended with no renewal. Free-tier entitlements apply. |
+| `SUSPENDED` | Admin-imposed. All entitlements revoked. Platform Admin action only. |
+
+---
+
+## API Surface
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/subscriptions/me` | Bearer | Get current subscription status and entitlements |
+| `POST` | `/api/v1/subscriptions/upgrade` | Bearer | Upgrade to a paid plan (triggers billing flow) |
+| `POST` | `/api/v1/subscriptions/cancel` | Bearer | Cancel subscription (retains access until period end) |
+| `GET` | `/api/v1/subscriptions/plans` | None | List available subscription plans and pricing |
+| `GET` | `/api/v1/subscriptions/invoices` | Bearer | Fetch billing history |
+
+---
+
+## Data Owned
+
+| Store | Content |
+|---|---|
+| **Postgres** | `subscriptions` (user_id, plan_id, status, trial_start, billing_period_start, billing_period_end, payment_processor, processor_subscription_id, grace_expires_at) |
+
+---
+
+## Kafka Topics
+
+| Topic | Action |
+|---|---|
+| `payment.processed` | **Consumed** — triggers entitlement grant on successful charge |
+| `subscription.upgraded` | **Produced** (internally, from state machine) — consumed by Notification Service, Audit Log, Creator Payout Service |
+
+---
+
+## Failure Behaviour
+
+| Failure | Behaviour |
+|---|---|
+| **Billing Engine gRPC unreachable** | Upgrade request fails gracefully with a user-facing error. Existing subscriptions are unaffected. Renewal retry jobs have their own isolated retry queue. |
+| **Payment processor webhook delayed** | Subscription remains in `PAST_DUE` state until the webhook arrives. Grace period absorbs processing delays of up to 7 days. |
+| **Subscription Service unavailable** | Playback Service falls back to the last known entitlement cached in Redis (5-minute TTL). Brief outages do not interrupt active streams. |
+
+---
+
+## Related Pages
+
+- [Billing & Payments Pipeline](/pipelines/billing-payments)
+- [Playback Service](/services/playback-service)
+- [Admin Control Plane](/services/admin-control-plane)

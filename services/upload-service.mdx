@@ -1,0 +1,75 @@
+---
+title: Upload Service
+sidebarTitle: Upload Service
+description: Presigned URL generation, upload session management, draft saving, content scheduling, and media pipeline trigger.
+icon: cloud-arrow-up
+---
+
+import ResidencyCallout from '/snippets/residency-immutable-callout.mdx'
+
+## Purpose
+
+The Upload Service is the application-layer owner of the content creation workflow. It sits between the creator client and the Media Processing Pipeline, handling all coordination that precedes file processing. The Upload Service does not handle file bytes — raw media is uploaded directly from the client to object storage via presigned URLs, keeping the Upload Service out of the data path.
+
+---
+
+## Responsibilities
+
+| Responsibility | Detail |
+|---|---|
+| **Presigned URL generation** | Issues time-limited (15-minute) presigned S3 URLs for direct client-to-storage multipart uploads. Routes to the global hot staging bucket or Nigeria residency staging bucket based on the Residency Policy Engine decision made at session creation. |
+| **Upload session management** | Creates and tracks upload sessions in Redis: `session_id`, `content_id`, `creator_id`, `residency_decision`, `upload_progress`, `expiry`. Supports resumable uploads — clients reconnect using the stored `session_id`. |
+| **Metadata submission** | Accepts content metadata at session creation: title, description, tags, category, language, visibility, scheduled publish time. Metadata is validated and persisted to Postgres before the file lands in storage. |
+| **Draft saving** | Upload sessions can be saved as drafts — metadata is persisted but the pipeline is not triggered until the creator explicitly publishes. |
+| **Content scheduling** | A scheduled publish timestamp is stored at metadata submission. A scheduler cron polls for due-to-publish drafts and emits `media.upload.initiated` to trigger the pipeline at the configured time. |
+| **Pipeline trigger** | On upload completion (confirmed via S3 event notification), the Upload Service marks the session complete and emits `media.upload.initiated` to Kafka, handing off to the Upload Ingestor. |
+
+<ResidencyCallout />
+
+---
+
+## API Surface
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/uploads/session` | Bearer (Creator) | Create upload session, get presigned URL and content ID |
+| `GET` | `/api/v1/uploads/session/{sessionId}` | Bearer (Creator) | Fetch session status and resume upload URL |
+| `PATCH` | `/api/v1/uploads/session/{sessionId}/metadata` | Bearer (Creator) | Update content metadata before publish |
+| `POST` | `/api/v1/uploads/session/{sessionId}/publish` | Bearer (Creator) | Publish a draft (triggers pipeline via Kafka) |
+| `DELETE` | `/api/v1/uploads/session/{sessionId}` | Bearer (Creator) | Cancel an in-progress upload session |
+
+---
+
+## Data Owned
+
+| Store | Schema |
+|---|---|
+| **Postgres** | `content_drafts` (content_id, creator_id, title, description, tags, category, visibility, scheduled_at, status, residency, created_at) |
+| **Redis** | Upload sessions keyed by `upload_session:{sessionId}` — includes presigned URL metadata, progress, expiry, residency routing decision |
+
+---
+
+## Kafka Topics
+
+| Topic | Action |
+|---|---|
+| `media.upload.initiated` | **Produced** on upload completion or scheduled publish trigger |
+
+---
+
+## Failure Behaviour
+
+| Failure | Behaviour |
+|---|---|
+| **Upload Service unavailable** | Returns a user-facing error. In-progress uploads are resumable — the session state is persisted in Redis and survives a service restart. Clients present the `session_id` to resume. |
+| **S3 completion event lost** | The Upload Service provides a manual completion endpoint as a fallback. Clients may poll session status; a dedicated reconciliation job checks for stale sessions with complete S3 objects. |
+| **Residency Policy Engine unavailable** | Upload session creation fails with `503`. The RPE is a hard dependency for routing decisions — no fallback routing is applied to avoid accidental misrouting of residency content. |
+| **Kafka producer failure** | Pipeline trigger is retried with exponential backoff. If the emit fails after exhausting retries, the session is marked `PENDING_TRIGGER` and a background job retries on the next polling cycle. |
+
+---
+
+## Related Pages
+
+- [Media Ingestion Pipeline](/pipelines/media-ingestion)
+- [Data Residency](/infrastructure/data-residency)
+- [Content Service](/services/content-service)

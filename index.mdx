@@ -1,97 +1,66 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "MTN Cloud Streaming Platform"
+description: "Technical architecture documentation for MCSP — a large-scale, multi-tenant SaaS streaming service built on MTN infrastructure"
 ---
 
-## Setting up
+# MTN Cloud Streaming Platform
 
-Get your documentation site up and running in minutes.
+MCSP is a large-scale, multi-tenant SaaS video and audio streaming service built exclusively on MTN cloud infrastructure. It delivers content to Nigerian domestic audiences and the international diaspora under a dual-tier monetization model: ad-supported free viewing and ad-free paid subscriptions.
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Platform Overview" icon="layer-group" href="/overview/introduction">
+    Scale assumptions, capabilities, multi-tenant model, and revenue streams
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Architecture" icon="diagram-project" href="/architecture/high-level-diagram">
+    High-level diagrams, layer breakdown, and communication patterns
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Services" icon="cubes" href="/services/overview">
+    Application-layer microservices and their responsibilities
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Pipelines" icon="arrow-progress" href="/pipelines/media-ingestion">
+    End-to-end system flows for media processing and delivery
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Key Features
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Nigeria Data Residency" icon="flag" href="/infrastructure/data-residency">
+    Verifiable data sovereignty with MTN Cloud infrastructure
+  </Card>
+  <Card title="Multi-DRM Protection" icon="lock" href="/pipelines/drm-content-security">
+    Widevine, FairPlay, and PlayReady with CMAF encryption
+  </Card>
+  <Card title="Event-Driven Pipeline" icon="arrows-split-up-and-left" href="/decisions/adr-001-event-driven-pipeline">
+    Kafka-based async processing for media ingestion and transcoding
+  </Card>
+  <Card title="ML Recommendations" icon="brain" href="/pipelines/ml-recommendations">
+    Two-tower neural network with ANN for personalized content retrieval
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Architecture Decision Records
 
-## Need inspiration?
+Explore the technical decisions that shaped MCSP's architecture:
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="ADR Overview" icon="scale-balanced" href="/decisions/overview">
+    Complete index of architecture decisions with context and tradeoffs
+  </Card>
+  <Card title="Technical Reference" icon="book" href="/reference/glossary">
+    Glossary, Kafka topics, storage model, and risk register
+  </Card>
+</CardGroup>
+
+## Document Scope
+
+This documentation set is the authoritative technical reference for MCSP v1.0. It is written for:
+
+- **Platform engineers** onboarding to the codebase and infrastructure
+- **Architects** evaluating design decisions and extension points
+- **Security reviewers** conducting cloud security and compliance audits
+- **Technical stakeholders** conducting due diligence
+
+<Note>
+  This is a confidential technical architecture document. Access is restricted to authorized personnel only.
+</Note>

@@ -1,0 +1,94 @@
+---
+title: "ADR-007: Dual-Currency Payout Architecture"
+sidebarTitle: ADR-007 Dual-Currency Payout
+description: Decision to operate Paystack (NGN) and Stripe (USD) as parallel payment processors, with FX rate locking at the start of each payout period.
+icon: credit-card
+---
+
+<Info>
+  **Status: Accepted** — Adopted for MCSP v1.0. Cryptocurrency payout deferred to future evaluation.
+</Info>
+
+## Context
+
+The platform serves two distinct creator populations with different currency requirements:
+
+1. **Nigeria-domestic creators** — based in Nigeria, operating NGN bank accounts, taxed under Nigerian law (VAT + WHT). Payouts must be in NGN to any Nigerian bank account or mobile money wallet.
+2. **Diaspora / international creators** — based outside Nigeria, operating USD accounts, taxed under home jurisdiction. Payouts must be in USD.
+
+The subscriber base also spans both currencies: Nigerian subscribers pay in NGN; international subscribers pay in USD. A single creator can have subscribers in both currencies, meaning their revenue pool is a mix of NGN and USD charges.
+
+Three additional constraints were identified during design:
+
+1. **FX rate volatility**: NGN has experienced significant devaluation against USD. Mid-period FX rate changes would create unpredictable payout amounts if rates are applied at payout time rather than at revenue recognition time.
+2. **Payment provider geographic coverage**: No single payment provider covers Nigeria domestic (NGN) and international (USD) with the same API surface, pricing, and regulatory compliance at acceptable rates. Paystack is the leading NGN processor; Stripe is the standard USD processor.
+3. **Regulatory compliance**: Nigerian FIRS (Federal Inland Revenue Service) reporting requirements for withholding tax on creator payouts require NGN-denominated transaction records.
+
+---
+
+## Decision
+
+Operate **two payment processors in parallel**:
+- **Paystack** handles all NGN-denominated charges and payouts (Nigeria domestic subscribers and creators)
+- **Stripe** handles all USD-denominated charges and payouts (international subscribers and creators)
+
+**FX rate locking:** At the start of each monthly payout period, the FX rate (NGN/USD) is fetched from a reliable reference source (Central Bank of Nigeria official rate or a bank mid-rate) and stored as an immutable `payout_period_fx_rate` record. All cross-currency revenue attribution within that period uses this locked rate. The rate is not updated mid-period, regardless of market movements.
+
+**Currency routing:** The Billing Service reads each creator's registered payout currency (`NGN` or `USD`) to determine which processor handles their payout. If the creator's payout currency differs from the subscriber's charge currency, the locked FX rate is applied to convert the revenue before calculating the payout.
+
+---
+
+## Alternatives Considered
+
+<AccordionGroup>
+  <Accordion title="Alternative A: NGN-only platform (single processor)">
+    **Description:** All revenues collected and all payouts issued in NGN. International subscribers pay in NGN (computed at time of checkout). International creators receive NGN payouts and manage their own FX conversion.
+
+    **Why rejected:** Placing the FX conversion burden on international creators and subscribers is a competitive disadvantage. International creators would need to maintain Nigerian bank accounts or use intermediaries. This limits diaspora creator acquisition — a key target segment.
+  </Accordion>
+  <Accordion title="Alternative B: USD-only platform (single processor)">
+    **Description:** Stripe as the sole processor. All revenues collected in USD. Nigerian subscribers pay in USD (computed at time of checkout). Nigerian creators receive USD payouts.
+
+    **Why rejected:** Nigerian subscribers paying USD requires them to hold USD-denominated cards — a barrier at scale in Nigeria's consumer market. Nigerian creators receiving USD payouts face NGN conversion fees and banking complications for domestic spending. FIRS withholding tax reporting in NGN becomes complex. Paystack's local payment method support (bank transfer, USSD, mobile money) is critical for Nigeria market penetration.
+  </Accordion>
+  <Accordion title="Alternative C: Stablecoin payout (USDC/USDT)">
+    **Description:** Issue creator payouts in stablecoin, removing FX exposure entirely.
+
+    **Why deferred:** Regulatory clarity for crypto payouts under Nigerian law is developing. CBN guidelines on virtual asset service providers are subject to revision. Adopted for future evaluation when regulatory environment is stable. Not viable for v1.0.
+  </Accordion>
+  <Accordion title="Alternative D: Single processor with FX (e.g., Mono, Flutterwave)">
+    **Description:** Use a single aggregator (Flutterwave or similar) that handles both NGN and USD from one integration.
+
+    **Why rejected:** Aggregators introduce an additional tier of fees and a single point of failure across both currency regions. Paystack and Stripe offer direct integrations with better pricing and more granular control. Two integrations of best-in-class providers is preferable to one integration of a multi-currency aggregator at the pricing levels involved.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Consequences
+
+- Billing Service must maintain routing logic for two payment processors. Both integrations must be maintained and monitored independently.
+- FX rate locking means creators may receive more or fewer NGN than the spot rate would have provided at payout time, depending on mid-period rate movement. This is clearly communicated to creators in the payout policy.
+- FIRS reporting requires NGN-equivalent records for all creator payouts regardless of source currency. The FX rate lock provides the stable conversion rate for these records.
+- If a payout processor (Paystack or Stripe) is unavailable at the scheduled payout time, the affected payout batch is deferred and on-call is alerted. Cross-processor fallback is not available (NGN payouts cannot fall back to Stripe).
+
+---
+
+## Tradeoffs
+
+| Dimension | NGN-only | USD-only | Dual (selected) | Stablecoin |
+|---|---|---|---|---|
+| Nigeria subscriber friction | None | High | Low | Medium |
+| Diaspora creator friction | High | None | Low | Medium |
+| FX exposure management | None (NGN) | None (USD) | Managed via lock | None |
+| Regulatory clarity in Nigeria | Clear | Clear | Clear | Uncertain |
+| Operational complexity | Low | Low | Medium | High |
+| Provider failure risk | One processor | One processor | Two independent processors | Separate risk profile |
+
+---
+
+## Related
+
+- [Billing & Payments Pipeline](/pipelines/billing-payments)
+- [Subscription Service](/services/subscription-service)
+- [ADR-008 — Saga Orchestration](/decisions/adr-008-saga-orchestration)

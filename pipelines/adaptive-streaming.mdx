@@ -1,0 +1,119 @@
+---
+title: Adaptive Streaming & CDN Delivery
+sidebarTitle: Adaptive Streaming
+description: HLS and DASH packaging strategy, CDN token authentication model, manifest generation flow, caching policy, and content-type specific delivery paths.
+icon: signal
+---
+
+## Overview
+
+All MCSP content — video and audio — is delivered via CDN using adaptive bitrate (ABR) streaming in both HLS and MPEG-DASH formats. The origin (object store) is never directly accessible to clients. CDN-signed, time-limited URLs control access per content item per user session.
+
+<Info>
+  **Architecture note:** CDN-first delivery is an architectural constraint, not a performance optimisation. At 150,000 peak concurrent streams, direct object storage would not be viable from a cost or latency perspective. See [ADR-002](/decisions/adr-002-cdn-first-delivery) for the full decision record.
+</Info>
+
+---
+
+## Packaging Format Matrix
+
+Both video and audio use **CMAF** (Common Media Application Format) fMP4 containers — a single set of encoded segments serves both HLS and DASH manifests, halving the CDN storage footprint compared to maintaining separate segment sets.
+
+| Platform | DRM System | Protocol | Manifest Type |
+|---|---|---|---|
+| iOS / Safari | FairPlay | HLS | `.m3u8` with `EXT-X-KEY` (CBCS) |
+| Android / Chrome | Widevine | DASH | `.mpd` (CENC) |
+| Desktop browsers | Widevine | DASH | `.mpd` (CENC) |
+| Smart TVs (Tizen/webOS) | Widevine or PlayReady | HLS or DASH | Platform-dependent |
+| Audio (iOS/Safari) | FairPlay | HLS audio-only | `.m3u8` with `EXT-X-MEDIA`, no video rendition |
+| Audio (all others) | Widevine | DASH audio-only | `.mpd` with audio `AdaptationSet` only |
+
+---
+
+## Manifest Generation and Token Flow
+
+<Steps>
+  <Step title="Playback request">
+    Client sends `GET /api/v1/play/{contentId}` with Bearer token to the Playback Service.
+  </Step>
+  <Step title="Entitlement and content type resolution">
+    Playback Service checks subscription entitlement, content visibility, and geographic restrictions. Resolves `content_type: VIDEO | AUDIO` from the Content Service.
+  </Step>
+  <Step title="DRM session token generation">
+    Playback Service calls the DRM License Server via gRPC. A short-lived DRM session token (5-minute TTL) is issued for the specific `(userId, contentId, sessionId)` triple.
+  </Step>
+  <Step title="CDN-signed manifest URL generation">
+    Playback Service generates an HMAC-signed CDN URL:
+    ```
+    HMAC(contentId + userId + sessionId + contentType + expiry, CDN_SECRET)
+    ```
+    URL TTL: 1 hour. Returned to client alongside `drm_token` and `license_server_url`.
+  </Step>
+  <Step title="CDN manifest fetch">
+    Client fetches the manifest from CDN. CDN validates the HMAC signature. On validation failure, CDN returns `403` and no media is served.
+  </Step>
+  <Step title="DRM license acquisition">
+    Client sends the `drm_token` to the License Server. License Server validates the token and issues a decryption key license (CEK wrapped in device public key). Client player decrypts segments in the hardware secure context.
+  </Step>
+  <Step title="Segment streaming">
+    Client player fetches fMP4 segments from CDN edge cache. CDN serves from edge without contacting origin (cache hit for segments in the 24-hour window). ABR algorithm selects quality tier based on measured bandwidth.
+  </Step>
+  <Step title="Player rendering">
+    For `content_type: VIDEO` — full AV player renders video with synchronized audio track.
+    For `content_type: AUDIO` — audio-only player renders audio with cover art displayed.
+  </Step>
+</Steps>
+
+---
+
+## CDN Caching Policy
+
+| Asset | TTL | Invalidation Trigger |
+|---|---|---|
+| Video segments (`.ts`, `.m4s`) | 24 hours | Content deletion or DRM key rotation |
+| Audio segments (`.m4s`, `.aac`) | 24 hours | Content deletion or DRM key rotation |
+| Video HLS manifest (`.m3u8`) | 30 seconds | Content update, resolution addition, DRM re-key |
+| Audio HLS manifest (`.m3u8`) | 30 seconds | Content update, bitrate variant addition, DRM re-key |
+| DASH manifest (`.mpd`) — video or audio | 30 seconds | Same as above |
+| Video thumbnails | 7 days | Custom thumbnail upload |
+| Audio cover art | 7 days | Creator updates cover art |
+| API responses (metadata) | Not cached at CDN | Redis cache at application layer |
+
+<Warning>
+  **Nigeria residency content is excluded from global CDN edge caching.** Residency content is served from the MTN Cloud Nigeria CDN origin only. International users accessing residency content will experience higher latency. This is a deliberate data sovereignty tradeoff — see [Data Residency](/infrastructure/data-residency).
+</Warning>
+
+---
+
+## ABR Quality Selection
+
+The client player manages quality tier selection using standard ABR algorithms:
+
+| Platform | ABR Implementation |
+|---|---|
+| iOS | AVFoundation built-in ABR |
+| Android | ExoPlayer adaptive track selection |
+| Web | DASH.js / hls.js with throughput-based algorithm |
+
+Manual quality selection overrides ABR and locks to the selected tier. The override persists for the session duration or until the user resets to auto.
+
+---
+
+## Failure Handling
+
+| Failure | Behaviour |
+|---|---|
+| **CDN edge node failure** | Requests automatically route to the next nearest PoP. No client-visible interruption for in-progress streams (TCP keep-alive). |
+| **Manifest HMAC validation failure** | CDN returns `403`. Client receives a clear error. The 1-hour TTL covers a full viewing session for most long-form content. |
+| **DRM license expiry during playback** | At TTL expiry during active playback, the client initiates a silent license refresh using the existing `drm_token` (valid for 5 minutes). On `drm_token` expiry, playback pauses and the user is prompted to re-authenticate. |
+| **Segment cache miss (cold content)** | CDN fetches from origin object storage. Cold storage retrieval adds 1–12 seconds for archive-tier content. See [ADR-005](/decisions/adr-005-storage-tiering-engine) for the pre-warming mitigation. |
+
+---
+
+## Related Pages
+
+- [Playback Service](/services/playback-service)
+- [DRM & Content Security](/pipelines/drm-content-security)
+- [Scalability & Resilience](/infrastructure/scalability-resilience)
+- [ADR-002 — CDN-First Delivery](/decisions/adr-002-cdn-first-delivery)
+- [ADR-004 — Multi-DRM CMAF](/decisions/adr-004-multi-drm-cmaf)

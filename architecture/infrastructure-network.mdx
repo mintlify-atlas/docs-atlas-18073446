@@ -1,0 +1,108 @@
+---
+title: Infrastructure & Network
+sidebarTitle: Infrastructure & Network
+description: Full infrastructure and network topology diagram for MCSP, showing VPC boundaries, subnet layout, data stores, and the Nigeria Residency VPC.
+icon: network-wired
+---
+
+## Infrastructure Diagram
+
+```mermaid
+graph TB
+  subgraph INTERNET["Internet"]
+    USERS[End Users / Clients]
+    PAYMENTS[Payment Processors\nPaystack / Stripe]
+  end
+
+  subgraph EDGE_ZONE["Edge Zone (Global)"]
+    WAF[WAF + DDoS Shield\nCloudflare / AWS Shield]
+    CDN[CDN Edge Nodes\nMulti-PoP Global + MTN NG]
+    APIGW[API Gateway\nPublic Subnet / Load Balanced]
+  end
+
+  subgraph VPC_GLOBAL["Global VPC — Primary Region"]
+    subgraph PUB_SUBNET["Public Subnet"]
+      NLB[Network Load Balancer]
+      NAT[NAT Gateway]
+    end
+    subgraph APP_SUBNET["Private App Subnet (Multi-AZ)"]
+      K8S[Kubernetes Cluster\nApp Services Pods]
+      MEDIA_CLUSTER[Media Processing Cluster\nTranscoding Workers]
+      ML_CLUSTER[ML Inference Cluster\nGPU Nodes]
+    end
+    subgraph DATA_SUBNET["Private Data Subnet (Multi-AZ)"]
+      PG_PRIMARY[(Postgres Primary\nAZ-1)]
+      PG_STANDBY[(Postgres Standby\nAZ-2)]
+      REDIS[(Redis Cluster\nMulti-AZ)]
+      ES[(Elasticsearch\nMulti-AZ)]
+      KAFKA_CLUSTER[Kafka Cluster\nMulti-AZ / 3 Brokers min]
+    end
+    subgraph OBJECT_STORE["Object Storage"]
+      HOT_BUCKET[Hot Bucket\nSSD / Frequent Access]
+      COLD_BUCKET[Cold Bucket\nArchive / Infrequent Access]
+    end
+    subgraph ML_TRAINING["ML Training (Isolated)"]
+      SPARK[Spark Cluster]
+      FEAT_STORE[Feature Store]
+      MODEL_REGISTRY[Model Registry]
+    end
+    subgraph OBS_STACK["Observability Stack"]
+      PROM[Prometheus]
+      GRAFANA[Grafana]
+      LOKI[Loki / ELK]
+      JAEGER[Jaeger / Tempo]
+    end
+    subgraph MGMT["Control Plane / Management"]
+      AUDIT_DB[(Audit Log Store\nAppend-only)]
+      KMS_HSM[KMS / HSM]
+      SECRETS[Secrets Manager]
+    end
+  end
+
+  subgraph VPC_NG["Nigeria Residency VPC — MTN Cloud Nigeria"]
+    NG_PUB[Public Subnet\nNG Load Balancer]
+    NG_APP[Private App Subnet\nNG Streaming Origin]
+    NG_BUCKET[(Nigeria Residency\nObject Store – NG ONLY)]
+    NG_DB[(Postgres Replica\nNG Residency Metadata)]
+    NG_WAF[NG WAF / DDoS]
+  end
+
+  USERS -->|HTTPS 443| WAF
+  WAF --> CDN & APIGW
+  CDN -->|Signed URL| HOT_BUCKET
+  CDN -->|NG Residency| NG_BUCKET
+  APIGW --> NLB --> K8S
+  K8S --> PG_PRIMARY & REDIS & ES & KAFKA_CLUSTER & HOT_BUCKET & AUDIT_DB & KMS_HSM & SECRETS
+  MEDIA_CLUSTER --> HOT_BUCKET & NG_BUCKET & KAFKA_CLUSTER
+  ML_CLUSTER --> FEAT_STORE & MODEL_REGISTRY
+  SPARK --> FEAT_STORE
+  HOT_BUCKET <-->|Auto Tier| COLD_BUCKET
+  K8S -->|Metrics/Logs| OBS_STACK
+  PAYMENTS -->|Webhook HTTPS| APIGW
+  VPC_GLOBAL <-->|VPC Peering / Private Link| VPC_NG
+```
+
+---
+
+## Network Boundaries
+
+| Zone | Access Model |
+|---|---|
+| **Internet → Edge** | Public HTTPS only. All traffic passes through WAF before reaching CDN or API Gateway. |
+| **Edge → App Subnet** | API Gateway → Network Load Balancer → Kubernetes pods in private subnet. No direct internet access to pods. |
+| **App Subnet → Data Subnet** | Private subnet routing only. Database connections require TLS. No data store is reachable from the public subnet. |
+| **Global VPC → Nigeria VPC** | VPC Peering / Private Link. Application services in the global VPC access residency content through a controlled ingress in the Nigeria VPC — never directly to the Nigeria bucket. |
+| **Nigeria VPC** | Nigeria residency bucket is accessible only to services running inside the Nigeria VPC. IAM bucket policy explicitly denies all cross-region replication. |
+
+---
+
+## High-Availability Layout
+
+All stateful services are deployed across a minimum of 3 availability zones:
+
+- **Postgres**: Primary in AZ-1, standby in AZ-2 (automated failover, RTO < 30 seconds)
+- **Kafka**: Minimum 3 brokers distributed across AZs; replication factor ≥ 3
+- **Redis Cluster**: Multi-AZ with daily RDB snapshots
+- **Elasticsearch**: Multi-AZ with daily snapshots to object store
+
+See [Scalability & Resilience](/infrastructure/scalability-resilience) for disaster recovery targets and the full backup strategy.

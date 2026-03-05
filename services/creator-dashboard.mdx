@@ -1,0 +1,75 @@
+---
+title: Creator Dashboard Service
+sidebarTitle: Creator Dashboard
+description: Creator analytics, revenue reporting, payout settings, audience insights, and real-time stream metrics.
+icon: chart-line
+---
+
+## Purpose
+
+The Creator Dashboard Service aggregates time-series metrics from the analytics pipeline and presents them to creators via a read-heavy API. It also owns payout settings and is responsible for surfacing real-time updates via WebSocket (live view count during active streams, moderation decision alerts). It is a read-aggregation service — it does not own the underlying engagement or billing data.
+
+---
+
+## Responsibilities
+
+| Responsibility | Detail |
+|---|---|
+| **Analytics aggregation** | Reads pre-aggregated metrics from the analytics time-series store (TimescaleDB / ClickHouse): views, watch time, likes, shares, subscriber growth, and completion rate — queryable by time range and content item. |
+| **Revenue reporting** | Surfaces per-creator ad revenue, subscription revenue share, and payout history by reading payout records from the Billing Engine's output tables. |
+| **Real-time metrics** | Subscribes to `user.engagement.events` via WebSocket forwarding for live view count updates on active content. Creator dashboard displays near-real-time counts without polling. |
+| **Payout settings** | Creators configure preferred payout currency (NGN or USD) and payment method (Paystack bank account or Stripe details). Payout settings stored in Postgres; read by the Payout Service at payout time. |
+| **Audience insights** | Aggregated (anonymised) audience data: geographic distribution, device breakdown, top content by completion rate, subscriber growth curve. |
+| **Content library** | Lists the creator's uploaded content with status, view count, and earnings per item. |
+
+---
+
+## API Surface
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/creator/analytics/overview` | Bearer (Creator) | Summary metrics: views, watch time, subscribers, revenue |
+| `GET` | `/api/v1/creator/analytics/content/{contentId}` | Bearer (Creator) | Per-content analytics |
+| `GET` | `/api/v1/creator/analytics/audience` | Bearer (Creator) | Aggregated audience demographics |
+| `GET` | `/api/v1/creator/revenue` | Bearer (Creator) | Revenue breakdown and payout history |
+| `GET` | `/api/v1/creator/content` | Bearer (Creator) | Content library with status, views, earnings |
+| `GET` | `/api/v1/creator/payout-settings` | Bearer (Creator) | Fetch payout configuration |
+| `PUT` | `/api/v1/creator/payout-settings` | Bearer (Creator) | Update payout currency and payment method |
+| `WS` | `/ws/creator/live-metrics` | Bearer (Creator) | WebSocket stream for real-time view counts |
+
+---
+
+## Data Owned
+
+| Store | Content |
+|---|---|
+| **Postgres** | `payout_settings` (creator_id, currency, paystack_account_id, stripe_account_id), `payout_history` (read from Billing Engine output) |
+| **TimescaleDB / ClickHouse** | Time-series analytics: `content_metrics` (content_id, creator_id, period, views, watch_time_s, likes, shares, completions) |
+
+---
+
+## Kafka Topics
+
+| Topic | Action |
+|---|---|
+| `user.engagement.events` | **Consumed** — drives real-time WebSocket metric updates to creator dashboard |
+| `engagement.subscription.changed` | **Consumed** — updates subscriber count in real-time dashboard |
+| `payment.processed` | **Consumed** — triggers revenue dashboard refresh |
+
+---
+
+## Failure Behaviour
+
+| Failure | Behaviour |
+|---|---|
+| **Analytics store unavailable** | Dashboard API returns a `503` for analytics endpoints. Content library and payout settings remain available (Postgres-backed). No streaming impact. |
+| **WebSocket disconnection** | Client reconnects and receives the latest state. Real-time counts may show a brief gap — counts are eventually consistent. |
+| **Creator Dashboard unavailable** | No impact on viewer streaming, content upload, or moderation pipelines. |
+
+---
+
+## Related Pages
+
+- [Billing & Payments Pipeline](/pipelines/billing-payments)
+- [Engagement Service](/services/engagement-service)
+- [Subscription Service](/services/subscription-service)

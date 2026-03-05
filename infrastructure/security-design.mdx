@@ -1,0 +1,91 @@
+---
+title: Security Design
+sidebarTitle: Security Design
+description: RBAC model, zero-trust enforcement, data encryption strategy, key management hierarchy, anti-piracy controls, and compliance posture for MCSP.
+icon: shield-halved
+---
+
+import ZeroTrust from '/snippets/zero-trust-callout.mdx'
+import AuditLog from '/snippets/audit-log-callout.mdx'
+
+## Identity and Access Model
+
+MCSP implements RBAC across four principal types, each with a distinct permission scope and trust level.
+
+| Role | Scope | Key Permissions |
+|---|---|---|
+| **Viewer** | Own account only | Stream content, manage own playlists/history, submit reports, manage own subscription |
+| **Creator** | Own channel and content | Upload/manage/delete own content, view analytics and revenue, manage payout settings, appeal moderation decisions |
+| **Organisation Admin** | Organisation tenancy | Manage org members, set org-wide residency policy, view org analytics, manage org subscription |
+| **Platform Admin** | Full platform | Manage all users and content, access moderation dashboard, manage ad campaigns, modify subscription plans, view audit logs, approve/revoke residency |
+
+JWT tokens encode role and a minimal claim set. Tokens are short-lived (15-minute access token; rotating refresh token stored as an HttpOnly cookie). The API Gateway validates token signature and expiry on every request. Service-to-service calls use separate mTLS client certificates issued per service identity.
+
+<ZeroTrust />
+
+---
+
+## Data Encryption
+
+| Data State | Approach |
+|---|---|
+| **In Transit (client-to-edge)** | TLS 1.3 mandatory. HSTS preload. Certificate pinning on iOS and Android apps. |
+| **In Transit (internal)** | mTLS between all microservices via Istio. Kafka traffic encrypted with TLS. All database connections require TLS. |
+| **At Rest (object storage)** | AES-256 server-side encryption. Media content uses envelope encryption: content key encrypted with a master key in KMS/HSM. |
+| **At Rest (databases)** | Postgres transparent data encryption (TDE) at storage layer. PII fields (payment tokens, email) additionally encrypted at the application layer with HSM-managed keys. |
+| **DRM Media Keys** | Never stored in plaintext. Accessible exclusively via authenticated KMS API. The DRM License Server does not cache key material beyond a single license issuance. |
+
+---
+
+## Key Management Hierarchy
+
+MCSP uses a three-tier key hierarchy backed by hardware security modules:
+
+<Steps>
+  <Step title="Hardware Root of Trust">
+    HSM (AWS CloudHSM or equivalent) holds master key material. Root keys rotate annually with ceremony.
+  </Step>
+  <Step title="Key Encryption Keys (KEKs)">
+    Managed in KMS. Used to wrap and unwrap Data Encryption Keys. Rotated quarterly. Never leave the KMS boundary in plaintext.
+  </Step>
+  <Step title="Data Encryption Keys (DEKs)">
+    Generated per content item. Wrapped with the KEK. Stored alongside content metadata in encrypted form. Rotated per content version.
+  </Step>
+</Steps>
+
+DRM content keys are issued by the Widevine/FairPlay/PlayReady key servers under a separate key namespace but are themselves wrapped by MCSP's KMS-managed KEKs.
+
+---
+
+## Anti-Piracy and Abuse Mitigation
+
+| Threat | Mitigation |
+|---|---|
+| **DDoS** | WAF + volumetric DDoS absorption at edge. CDN absorbs L3/L4 attacks. API Gateway rate limiting mitigates L7 application-layer DDoS. |
+| **Credential stuffing** | Rate limiting on `/login`. CAPTCHA after 3 failed attempts. Breached password detection via HaveIBeenPwned API at registration. Anomalous login geography triggers a 2FA challenge. |
+| **Content scraping** | Tokenised, time-limited CDN URLs (HMAC-signed, 1-hour TTL). Manifest URLs are user-session-bound. Server-side rendering prevents API key exposure in client bundles. |
+| **Screen recording** | Widevine L1 and FairPlay enforce hardware-backed output restrictions on supported devices. Browser EME API prevents direct access to decrypted media bytes. |
+| **Copyright infringement upload** | AI fingerprint scanner (perceptual hash + audio fingerprint) runs at upload time. Matching content is blocked pre-transcoding. |
+
+<Warning>
+  **Widevine L3 and desktop limitation.** Budget Android devices running Widevine L3 (software DRM) and desktop OS screen recording cannot be hardware-prevented. Per-user session visual watermarking embedded at packaging time provides forensic deterrence for high-value content in these environments.
+</Warning>
+
+---
+
+## Compliance Posture
+
+| Framework | MCSP Approach |
+|---|---|
+| **SOC 2 Type II** | Immutable audit logs, RBAC access controls, encryption at rest and in transit, incident response plan, change management via CI/CD approval gates |
+| **GDPR** | Data minimisation at collection, right-to-erasure via cascading account deletion, data portability export, DPA with all sub-processors, EU data stays in EU region |
+| **NDPR (Nigeria)** | Nigeria Data Residency provides verifiable data sovereignty for Nigerian users. Data processing agreements with local entity. Consent flows comply with NDPR requirements. |
+| **PCI DSS** | No card data stored on MCSP infrastructure. Tokenisation via Paystack/Stripe. SAQ-A scope. All payment forms hosted by payment processor. |
+
+<AuditLog />
+
+---
+
+## Privileged Access
+
+Production data is inaccessible to developers under normal operating conditions. A Privileged Access Management (PAM) system brokers time-limited, audited access for break-glass scenarios. All PAM access sessions are recorded and written to the immutable audit log.

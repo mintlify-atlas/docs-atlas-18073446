@@ -1,0 +1,144 @@
+---
+title: Communication Model
+sidebarTitle: Communication Model
+description: Synchronous and asynchronous communication patterns, Kafka topic catalogue, idempotency strategy, saga orchestration, and key sequence flows.
+icon: arrows-left-right
+---
+
+import IdempotencyCallout from '/snippets/idempotency-callout.mdx'
+
+## Synchronous vs. Asynchronous Patterns
+
+MCSP uses four communication patterns, each matched to a specific use case. Choosing the wrong pattern for a workload is a design defect.
+
+| Pattern | When Used | Rationale |
+|---|---|---|
+| **REST / HTTPS** | User-facing API requests: login, metadata fetch, subscription queries, search | Low latency required; direct response expected. API Gateway enforces validation and auth. |
+| **gRPC** | Internal service-to-service calls where contract precision matters: Playback → DRM License Server, Auth → User Service | Binary protocol, strongly typed proto definitions, lower overhead than REST for internal traffic. |
+| **Kafka (event streaming)** | All stateful domain transitions: upload completed, transcoding done, moderation decision, payment processed | Durable, ordered, replayable event streams. Decouples producers from consumers for independent scaling. |
+| **WebSocket** | Real-time notifications to creator dashboard (live view count, moderation outcomes) and upload progress | Bidirectional push without polling. |
+| **Webhook (outbound)** | Payment processor callbacks (Paystack/Stripe), DRM license callbacks | Async outbound delivery. Receiver validates HMAC signature before processing. |
+
+---
+
+## Kafka Topic Catalogue
+
+Topics are partitioned by `contentId` or `userId` to maintain ordering within a single entity's event stream. Consumer groups are isolated per service to allow independent replay and independent autoscaling.
+
+| Topic | Producers | Consumers |
+|---|---|---|
+| `media.upload.initiated` | Upload Service | Upload Ingestor |
+| `media.upload.completed` | Upload Ingestor | Copyright Scanner, Virus Scanner |
+| `media.copyright.cleared` | Copyright Scanner | Transcoding Orchestrator |
+| `media.transcoding.completed` | Transcoding Cluster | DRM Packager, Thumbnail Generator, Indexer |
+| `media.published` | Content Service | ML Feature Store, Notification Service, Search Indexer |
+| `user.engagement.events` | Engagement Service | ML Feature Store, Analytics Pipeline, Creator Dashboard |
+| `engagement.subscription.changed` | Engagement Service | Notification Service, Creator Dashboard |
+| `moderation.flagged` | AI Moderation Service | Human Review Queue, Content Service |
+| `payment.processed` | Billing Engine | Creator Dashboard, Notification Service, Audit Log |
+| `storage.tier.change` | Tiering Engine | Metadata Service, CDN Invalidation Service |
+
+Full topic details including partition strategy and retention policy are available in the [Kafka Topics Reference](/reference/kafka-topics).
+
+---
+
+## Idempotency and Exactly-Once Strategy
+
+Kafka's exactly-once semantics (EOS) are enabled for all transactional producers — billing events and moderation decisions. For consumer-side idempotency:
+
+<IdempotencyCallout />
+
+For billing operations, Stripe and Paystack idempotency keys are passed per transaction to prevent duplicate charges at the processor level.
+
+---
+
+## Saga Orchestration for Distributed Transactions
+
+Long-running operations spanning multiple services are orchestrated as sagas using Temporal.io as the workflow engine. Temporal provides durable execution, activity retries, timeout handling, and compensating transaction support.
+
+**Example — content publish saga:**
+1. Transcoding
+2. DRM packaging
+3. Metadata indexing
+4. Notification dispatch
+5. Content status set to `PUBLISHED`
+
+If step 3 (indexing) fails post-transcoding, the saga executor triggers the compensating transaction: marks the transcode as unpublished and notifies the creator. See [ADR-008](/decisions/adr-008-saga-orchestration) for the orchestration vs. choreography decision.
+
+---
+
+## Sequence: Media Upload Flow
+
+<Steps>
+  <Step title="Session creation">
+    Creator sends `POST /api/v1/uploads/session` → API Gateway → Upload Service.
+    Upload Service validates the JWT, queries the Residency Policy Engine, creates an upload session in Redis, persists the content metadata draft to Postgres, and returns `{ session_id, presigned_url, content_id }`.
+  </Step>
+  <Step title="Direct multipart upload">
+    Creator uploads the file directly to object storage using the presigned URL (multipart, resumable). The Upload Service is not in the data path.
+  </Step>
+  <Step title="Completion signal">
+    Object storage emits an S3 completion event to the Upload Service. Upload Service marks the session complete and emits `media.upload.initiated` to Kafka.
+  </Step>
+  <Step title="Validation and virus scan">
+    Upload Ingestor consumes `media.upload.initiated`, validates format/size limits, runs the virus scan, and emits `media.upload.completed`.
+  </Step>
+  <Step title="Copyright scan">
+    Copyright Scanner consumes `media.upload.completed`, runs AI fingerprint matching (video perceptual hash + audio fingerprint), and emits either `media.copyright.cleared` or `media.upload.blocked`.
+  </Step>
+  <Step title="Transcoding">
+    Transcoding Orchestrator consumes `media.copyright.cleared`, spawns one transcode job per resolution/bitrate variant, and emits `media.transcoding.completed` per variant.
+  </Step>
+  <Step title="DRM packaging">
+    DRM Packager consumes `media.transcoding.completed`, encrypts and packages HLS/DASH, writes to the appropriate hot or residency bucket, and emits `media.drm.packaged`.
+  </Step>
+  <Step title="Publish">
+    Content Service consumes `media.drm.packaged`, updates the content record status to `PUBLISHED`, and emits `media.published`.
+    Indexer, Notification Service, and ML Feature Store fan-out from `media.published`.
+  </Step>
+</Steps>
+
+---
+
+## Sequence: Playback Request Flow
+
+<Steps>
+  <Step title="Playback request">
+    Client sends `GET /api/v1/play/{contentId}` → API Gateway → Playback Service.
+  </Step>
+  <Step title="Entitlement and resume check">
+    Playback Service validates the JWT, checks the subscription tier and content visibility, and queries the Engagement Service for the user's resume position.
+  </Step>
+  <Step title="DRM pre-auth and manifest URL generation">
+    Playback Service calls the DRM License Server via gRPC and generates a CDN-signed manifest URL with a 1-hour TTL. Returns `{ manifest_url, drm_token, license_server_url }` to the client.
+  </Step>
+  <Step title="Manifest and segment fetch">
+    Client fetches the manifest from CDN (CDN validates the HMAC token) and streams media segments from CDN edge cache.
+  </Step>
+  <Step title="Playback event emission">
+    Client emits `playback.started`, `playback.progress`, and `playback.completed` events to the Engagement Service, which writes to Redis and Kafka.
+  </Step>
+</Steps>
+
+---
+
+## Sequence: Payment Transaction Flow
+
+<Steps>
+  <Step title="Subscription upgrade request">
+    Client sends `POST /api/v1/subscriptions/upgrade` → API Gateway → Subscription Service.
+  </Step>
+  <Step title="Billing Engine call">
+    Subscription Service validates the plan change and calls the Billing Engine via synchronous gRPC.
+  </Step>
+  <Step title="Payment intent creation">
+    Billing Engine creates a payment intent with Paystack/Stripe using an idempotency key (`userId + planId + timestamp`).
+  </Step>
+  <Step title="Card charge and webhook">
+    Payment processor charges the card and calls the MCSP webhook endpoint. The Billing Engine validates the webhook HMAC before processing.
+  </Step>
+  <Step title="Entitlement grant and fan-out">
+    Billing Engine emits `payment.processed` to Kafka. Subscription Service consumes the event, upgrades the user's entitlement, and emits `subscription.upgraded`.
+    Notification Service, Audit Log, and Creator Payout Service fan-out from `subscription.upgraded`.
+  </Step>
+</Steps>

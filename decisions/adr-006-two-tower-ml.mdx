@@ -1,0 +1,87 @@
+---
+title: "ADR-006: Two-Tower Neural Network for Recommendations"
+sidebarTitle: ADR-006 Two-Tower ML
+description: Decision to implement content recommendation using a two-tower neural network for retrieval combined with an ANN index (FAISS/ScaNN) to meet catalogue scale and latency budgets.
+icon: brain
+---
+
+<Info>
+  **Status: Accepted** — Adopted for MCSP v1.0. Matrix factorisation retained as cold-start fallback.
+</Info>
+
+## Context
+
+The platform targets a full catalogue of 3 million+ content items at Year 3. The recommendation system must return a personalised feed for each user within the overall API response budget (< 150 ms). For collaborative filtering or brute-force similarity approaches, scoring every item in a 3M+ item catalogue per user request is not computationally feasible at inference time — even at 1 µs per item, 3M scores takes 3 seconds.
+
+Two additional requirements constrained the model design:
+1. **Cold-start handling**: New users with no engagement history must still receive a relevant feed (not a uniformly random one).
+2. **New content discoverability**: A newly published content item should appear in recommendations within 30 minutes of publication, before it has accumulated any engagement history.
+
+The ML system also has to handle both video and audio content types uniformly without maintaining separate models, since a single user may consume both types and should receive cross-type discovery.
+
+---
+
+## Decision
+
+Implement a **two-stage recommendation pipeline**:
+
+**Stage 1 — Retrieval:** A two-tower neural network (separate user embedding tower and content embedding tower) trained offline. Pre-computed content embeddings are indexed in an Approximate Nearest Neighbour (ANN) index (FAISS or ScaNN). At inference time, the user embedding is computed using the online feature vector, then an ANN search returns the top 500 candidate content items. Target: < 15 ms total for embedding computation + ANN search.
+
+**Stage 2 — Ranking:** A deep learning ranking model (DLRM or equivalent) scores the 500 candidates against the full user feature vector. Returns a ranked list for the feed. Target: < 80 ms.
+
+**Cold-start fallback:** New users (< 5 engagement events) receive recommendations from a matrix factorisation model trained on aggregate interaction patterns. The MF model handles anonymised cohort-level preferences without requiring personal engagement history.
+
+**New content:** Content embedding is computed within 10–30 minutes of publish (triggered by `media.published` Kafka event). Until embedding is available, new content is surfaced via the trending feed, not personalised recommendations.
+
+---
+
+## Alternatives Considered
+
+<AccordionGroup>
+  <Accordion title="Alternative A: Matrix factorisation (standalone)">
+    **Description:** Use matrix factorisation (e.g., ALS, SVD) as the primary recommendation model. Well-understood, lower training complexity than deep models.
+
+    **Why not selected as primary:** MF inherently struggles with cold-start for new users and new items — both of which are continuous events at scale. MF also does not generalise well to content features (metadata, audio characteristics, visual style) without significant feature engineering. Retained as the cold-start fallback (< 5 engagement events) where item-level content features are not yet meaningful.
+  </Accordion>
+  <Accordion title="Alternative B: Collaborative filtering (user-based k-NN)">
+    **Description:** Find users with similar engagement histories and recommend content those similar users consumed.
+
+    **Why rejected:** At 5M+ users, user similarity computation is quadratic unless pre-computed. Pre-computing all user-user similarities requires significant offline infrastructure. Does not handle new item cold-start (a brand-new item has no consumption history among any user class). Less accurate than learned embedding representations for content-based affinity.
+  </Accordion>
+  <Accordion title="Alternative C: BM25 content-based retrieval">
+    **Description:** Use BM25 (Elasticsearch) to retrieve content based on metadata keyword matching against the user's interest profile.
+
+    **Why not selected as primary:** BM25 is used for explicit search but is not well-suited for implicit preference modelling. Engagement-based signals (completion rates, replays, subscriptions) cannot be easily incorporated into a BM25 relevance score. BM25 is retained for the explicit search endpoint where keyword matching is the correct behaviour.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Consequences
+
+- Recommendation quality is measurable via CTR, completion rate, and session depth A/B metrics. The two-tower model outperforms BM25 and MF on all three metrics in offline evaluations (see training evaluation records in MLflow).
+- Model freshness matters: the two-tower model reflects engagement patterns as of the last training run. Sudden trending events (e.g., a news story going viral) are reflected faster via the trending feed than via personalised recommendations.
+- Two-tower model requires ongoing MLOps infrastructure (training pipelines, model registry, serving infrastructure, A/B testing framework). This is a sustained engineering commitment, not a one-time deployment.
+- Monthly bias audits are mandatory (see [ML Recommendations Pipeline](/pipelines/ml-recommendations)). A model that passes technical metrics but fails the bias audit is blocked from promotion.
+
+---
+
+## Tradeoffs
+
+| Dimension | BM25 keyword | Matrix Factorisation | Two-Tower + ANN (selected) |
+|---|---|---|---|
+| Cold-start (new user) | Reasonable (metadata) | Poor | Good (fallback to MF) |
+| Cold-start (new content) | Immediate (indexed on publish) | Poor | 10–30 min delay |
+| Engagement signal incorporation | None | Strong | Strongest |
+| Latency at 3M items | < 20 ms | N/A (pre-ranked) | < 100 ms |
+| Training complexity | None | Medium | High |
+| MLOps requirement | None | Low | High |
+| Personalisation depth | Low | Medium | High |
+
+---
+
+## Related
+
+- [ML Recommendations Pipeline](/pipelines/ml-recommendations)
+- [Engagement Service](/services/engagement-service)
+- [Content Service](/services/content-service)

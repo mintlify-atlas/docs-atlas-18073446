@@ -1,0 +1,88 @@
+---
+title: Data Residency
+sidebarTitle: Data Residency
+description: Nigeria Data Residency architecture — storage isolation model, Residency Policy Engine design, CDN serving constraints, and compliance audit trail.
+icon: flag
+---
+
+import ResidencyCallout from '/snippets/residency-immutable-callout.mdx'
+import AuditLog from '/snippets/audit-log-callout.mdx'
+
+## Overview
+
+MCSP supports two storage tiers for uploaded content:
+
+<CardGroup cols={2}>
+  <Card title="Global Storage (Default)" icon="globe">
+    Content stored in the primary cloud region, replicated across AZs, and served via the global CDN. No data sovereignty guarantees.
+  </Card>
+  <Card title="Nigeria Residency (Premium)" icon="flag">
+    Content stored exclusively on MTN Cloud infrastructure physically within Nigeria. Never replicated outside the Nigeria region. Enforced at the IAM layer. Billable feature.
+  </Card>
+</CardGroup>
+
+<ResidencyCallout />
+
+---
+
+## Nigeria Residency Isolation Model
+
+| Component | Design |
+|---|---|
+| **Storage isolation** | Dedicated object storage bucket in MTN Cloud Nigeria. IAM bucket policy explicitly **DENIES** replication to any other region. This is an infrastructure-layer control, not an application-layer flag. |
+| **Metadata isolation** | A Postgres replica in the Nigeria region holds metadata for residency-flagged content. The global Postgres instance stores only a residency pointer and a content stub — no PII or sensitive metadata is held outside Nigeria for residency content. |
+| **Upload routing** | Upload Ingestor reads the residency decision from the job descriptor. If `residency = NIGERIA`, both the staging object and the transcode output are written directly to the Nigeria bucket — the global hot bucket is never touched. |
+| **CDN serving** | Residency content is served from a Nigeria CDN origin (MTN network PoP within Nigeria). Global CDN edge caching is explicitly excluded for residency-flagged content. |
+| **Access control** | The Nigeria residency bucket is accessible only to services running inside the Nigeria VPC. Services in the global VPC access residency content via VPC Peering through a controlled ingress in the Nigeria VPC. No direct cross-VPC bucket access is permitted. |
+
+<Warning>
+  Serving residency content exclusively from a Nigeria CDN origin limits global delivery performance for international diaspora users accessing residency-flagged content. This is a deliberate, documented tradeoff for the sovereignty guarantee.
+</Warning>
+
+---
+
+## Residency Policy Engine (RPE)
+
+The RPE is the authoritative decision-maker for all storage routing decisions. Before any write operation, the calling service queries the RPE with the `contentId` and `userId`/`orgId`.
+
+The RPE evaluates a three-level priority hierarchy:
+
+<Steps>
+  <Step title="Organisation-level default policy (highest priority)">
+    If the content belongs to an organisation that has set a default residency policy, that policy applies unconditionally to all uploads by members of that organisation.
+  </Step>
+  <Step title="Creator preference at upload">
+    If no organisation policy applies, the RPE respects the creator's residency preference submitted at upload session creation.
+  </Step>
+  <Step title="Platform default (lowest priority)">
+    If neither an organisation policy nor a creator preference is set, content routes to global storage.
+  </Step>
+</Steps>
+
+The RPE returns a routing decision — `GLOBAL` or `NIGERIA` — and writes an **immutable policy decision record** to the audit log. The RPE rejects any attempt to change the decision for a content ID that has already been decided.
+
+---
+
+## Residency Compliance Audit
+
+Every residency decision record contains:
+
+| Field | Value |
+|---|---|
+| `content_id` | Unique content identifier |
+| `user_id` | Creator or uploader |
+| `org_id` | Organisation (if applicable) |
+| `decision` | `NIGERIA` or `GLOBAL` |
+| `decision_timestamp` | ISO 8601 UTC timestamp |
+| `rpe_version` | RPE software version at decision time |
+| `policy_rule` | The rule ID that triggered the decision |
+
+<AuditLog />
+
+Audit records are queryable by compliance teams and exportable as a verifiable residency compliance report. The Nigeria residency bucket emits access logs to a dedicated compliance log store within the Nigeria region — logs do not leave Nigeria.
+
+---
+
+## Access Control Summary
+
+See [ADR-003](/decisions/adr-003-nigeria-residency-iam) for the architectural decision record covering why IAM-enforced bucket policy was chosen over application-layer-only enforcement.

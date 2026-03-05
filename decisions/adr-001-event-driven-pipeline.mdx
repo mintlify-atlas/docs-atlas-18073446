@@ -1,0 +1,81 @@
+---
+title: "ADR-001: Event-Driven Media Pipeline"
+sidebarTitle: ADR-001 Event-Driven Pipeline
+description: Decision to implement the media processing pipeline as a fully asynchronous event-driven system using Apache Kafka, replacing synchronous HTTP chains.
+icon: arrows-split-up-and-left
+---
+
+<Info>
+  **Status: Accepted** — Adopted for MCSP v1.0. No superseding decision.
+</Info>
+
+## Context
+
+The media processing pipeline involves at minimum twelve discrete stages: virus scan, format validation, video transcoding (5 resolutions), audio transcoding (4 bitrates), thumbnail generation, subtitle processing, DRM packaging (CENC + CBCS), manifest generation, metadata extraction, moderation check scheduling, and CDN pre-warming. 
+
+A synchronous HTTP chain would mean each stage must complete and return a response before the next stage can begin. For a 1-hour video upload, synchronous execution would require an HTTP connection to remain open for the full duration (10–45 minutes depending on resolution ladder), making the approach operationally infeasible. Additionally, synchronous chaining tightly couples every stage: a failure anywhere causes the entire chain to fail with no mechanism for targeted retry of the failing step alone.
+
+Two additional requirements reinforced the need for async design:
+1. The pipeline must support independent horizontal scaling of expensive stages (transcoding) without scaling cheaper stages.
+2. Re-processing a single stage (e.g., re-packaging for DRM after a key rotation) must be possible without re-running the full pipeline from the start.
+
+---
+
+## Decision
+
+Implement the entire media processing pipeline as a sequence of Kafka events. Each processing stage is an independent consumer group that reads from an input topic and writes completion events to an output topic. The Temporal.io saga engine orchestrates the overall pipeline — it tracks which stages have completed, triggers the next stage by publishing the appropriate Kafka event, and handles compensation if a stage fails permanently after retries.
+
+No stage polls another stage directly. No HTTP calls cross stage boundaries within the pipeline. All stage inputs and outputs are Kafka records.
+
+---
+
+## Alternatives Considered
+
+<AccordionGroup>
+  <Accordion title="Alternative A: Temporal.io as the primary execution engine">
+    **Description:** Use Temporal.io workflows and activities as the primary pipeline driver rather than Kafka topics. Each stage would be a Temporal activity; the workflow would call activities in sequence or parallel.
+
+    **Why rejected:** Temporal is well-suited to saga orchestration and long-running workflows but introduces a single point of control. At high ingestion volumes (thousands of concurrent uploads), Temporal worker queues would become the primary bottleneck. Kafka fan-out allows independent consumer group scaling. Temporal is retained in the final design as the _saga coordinator_ that observes and compensates — not as the primary event bus for per-stage triggers.
+  </Accordion>
+  <Accordion title="Alternative B: Synchronous REST chaining">
+    **Description:** Each stage calls the next stage via HTTP REST. The Upload Service would call the Transcoder API, which upon completion would call the DRM Packager API, and so on.
+
+    **Why rejected:** Unsuitable for the upload durations involved (10–45 minutes). REST connections are held open for the entire chain duration. Any single-stage failure fails the full pipeline from the start. No built-in horizontal scaling per stage. Rejected outright in early design review.
+  </Accordion>
+  <Accordion title="Alternative C: AWS Step Functions">
+    **Description:** Use Step Functions as the workflow engine for the pipeline, with Lambda or ECS tasks as executors.
+
+    **Why rejected:** Creates vendor lock-in at the core processing layer. Step Functions execution quotas (concurrent executions) would require quota management as upload volume scales. Self-hosted Temporal provides equivalent orchestration capability without cloud-provider lock-in, and Kafka provides higher-throughput event distribution. Step Functions is noted as a viable alternative for teams with existing AWS investment.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Consequences
+
+- Every pipeline stage is independently deployable and scalable.
+- Stage failures are isolated — the saga engine retries only the failing stage, not the whole pipeline.
+- Observability is improved: Kafka consumer lag per topic provides real-time visibility into pipeline throughput and backpressure.
+- Complexity increases: developers must understand Kafka consumer group semantics, offset management, and Temporal saga patterns to debug pipeline issues.
+- End-to-end latency from upload completion to content availability increases slightly (Kafka propagation + polling intervals) compared to a theoretically optimal synchronous system. In practice, transcoding dominates the total duration.
+
+---
+
+## Tradeoffs
+
+| Dimension | Synchronous HTTP | Event-Driven (selected) |
+|---|---|---|
+| Operational simplicity | Higher (direct HTTP) | Lower (Kafka + Temporal) |
+| Fault isolation | None (full-chain failure) | Per-stage retry |
+| Stage scalability | Full chain restarts on scale event | Independent per stage |
+| Total latency | Lower at low volume | Slightly higher at low volume, lower at high volume |
+| Re-processing cost | Full pipeline re-run | Single stage re-run |
+| Observability | Request tracing only | Kafka lag + Temporal history |
+
+---
+
+## Related
+
+- [Media Ingestion Pipeline](/pipelines/media-ingestion)
+- [Architecture Communication Model](/architecture/communication-model)
+- [ADR-008 — Saga Orchestration](/decisions/adr-008-saga-orchestration)

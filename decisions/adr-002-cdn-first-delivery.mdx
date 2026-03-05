@@ -1,0 +1,79 @@
+---
+title: "ADR-002: CDN-First Media Delivery"
+sidebarTitle: ADR-002 CDN-First Delivery
+description: Decision to route all media playback through CDN points of presence, prohibiting direct client access to origin object storage.
+icon: tower-broadcast
+---
+
+<Info>
+  **Status: Accepted** — Adopted for MCSP v1.0. No superseding decision.
+</Info>
+
+## Context
+
+The platform targets 150,000 concurrent streams at peak (Year 1) and up to 500,000 concurrent streams at Year 3. A 1080p stream at 4 Mbps and 150,000 concurrent viewers requires approximately 600 Gbps of aggregate egress. A 4K stream at 25 Mbps and 500,000 viewers requires 12.5 Tbps. These throughput levels cannot be served from a single-region cloud origin — S3 egress alone at those volumes would be cost-prohibitive and latency would be unacceptable for viewers outside the origin region.
+
+Additionally, the platform has a hard requirement that Nigeria-resident content must never traverse international data paths (see [ADR-003](/decisions/adr-003-nigeria-residency-iam)). A CDN with a local Nigerian PoP allows origin calls from within Nigeria to remain within the region.
+
+Exposing S3 presigned URLs directly to clients also creates key management risk: presigned URL leakage would allow direct object access that bypasses DRM entitlement checks and CDN token validation.
+
+---
+
+## Decision
+
+All media delivery to end clients is routed exclusively through CDN (CloudFront for global content; Akamai + MTN PoP for Nigeria domestic). Origin object storage (S3) has no public access. S3 bucket policies deny `s3:GetObject` to any principal other than the CDN origin identity (CloudFront OAC or Akamai signed token). There are no presigned S3 URLs issued to clients at any tier.
+
+Signed CDN URLs are the only delivery mechanism. They are issued by the Playback Service, carry a 4-hour expiry, are bound to the user's session, and are valid only from the client's IP (when IP binding is enabled in the CDN configuration).
+
+---
+
+## Alternatives Considered
+
+<AccordionGroup>
+  <Accordion title="Alternative A: Direct S3 presigned URLs to clients">
+    **Description:** Issue time-limited presigned S3 URLs directly to authenticated clients. Standard object storage pattern.
+
+    **Why rejected:** Presigned URL leakage bypasses DRM entitlement at the CDN layer. Presigned URLs cannot enforce Nigeria residency (S3 cannot restrict access by CDN PoP). Direct S3 egress costs are significantly higher than CDN egress at scale. No caching possible — every request hits origin. S3 does not support ABR manifest byte-range rewriting.
+  </Accordion>
+  <Accordion title="Alternative B: Custom origin serving fleet">
+    **Description:** Build a fleet of origin streaming servers (e.g., Nginx) that sit in front of S3 and serve video segments directly over HTTP/2.
+
+    **Why rejected:** Requires managing capacity for 150K+ concurrent long-lived connections. Does not provide CDN PoP geographic distribution without significant custom infrastructure. Reintroduces the cost and management burden that CDNs are specifically designed to eliminate. Not scalable to Year 3 targets without a substantially larger engineering investment.
+  </Accordion>
+  <Accordion title="Alternative C: P2P-assisted delivery">
+    **Description:** Supplement CDN delivery with peer-assisted delivery for popular content to reduce CDN egress cost.
+
+    **Why rejected:** Introduces client software complexity and data privacy concerns. Nigeria NDPR compliance for P2P data sharing is unclear. Not adopted for v1.0 but noted as a potential v2.0 cost-optimisation for high-volume long-tail content.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Consequences
+
+- Origin storage is fully isolated from clients — no S3 bucket is ever publicly accessible.
+- CDN cache-hit rates determine origin load: cache miss storms on unpopular content require origin capacity planning.
+- Nigeria content path is deterministic: content tagged `region: NG` is routed through the MTN PoP origin. This is enforced via the CDN routing config, not application code.
+- CDN vendor lock-in is a consideration. CloudFront-specific features (Lambda@Edge, OAC) are in use. Mitigation: CDN abstraction in the Playback Service allows provider swap with configuration changes.
+
+---
+
+## Tradeoffs
+
+| Dimension | Direct Origin | CDN-First (selected) |
+|---|---|---|
+| Origin isolation | None (public objects) | Full (S3 no public access) |
+| Egress cost at scale | Very high (S3 rates) | Lower (CDN bulk rates) |
+| Latency at PoP | Depends on origin region | Low at PoP, higher for cache miss |
+| Residency enforcement | Not enforceable at edge | Enforceable via CDN routing |
+| Operational complexity | Simple object storage | CDN configuration, invalidation, signed URL lifecycle |
+| DRM bypass risk | High (URL leakage) | Low (CDN token binding) |
+
+---
+
+## Related
+
+- [Adaptive Streaming Pipeline](/pipelines/adaptive-streaming)
+- [Playback Service](/services/playback-service)
+- [Infrastructure & Network](/architecture/infrastructure-network)
+- [ADR-003 — Nigeria Residency](/decisions/adr-003-nigeria-residency-iam)

@@ -1,0 +1,101 @@
+---
+title: Content Moderation Pipeline
+sidebarTitle: Content Moderation
+description: Automated AI moderation checks, human review workflow, creator appeal process, repeat violation escalation, and platform-level enforcement actions.
+icon: shield-halved
+---
+
+## Overview
+
+Every content item submitted to the platform passes through an automated moderation pipeline before publication is permitted. The pipeline performs six parallel checks. A flagged result on any check routes the content to the human review queue. The Content Service holds the item in `UNDER_REVIEW` status until a final moderation decision is recorded.
+
+<Warning>
+  Content in `UNDER_REVIEW` status is **not accessible to viewers**. The creator can see the item in their dashboard with status "Under Review" and an estimated resolution time. Immediate publication bypasses are not available to any role below `platform:admin`.
+</Warning>
+
+---
+
+## Automated Moderation Checks
+
+All six checks run in parallel once raw media is available in the ML Processing zone. Check workers consume from the `moderation.check.requested` internal topic.
+
+| Check | Method | Model / Tool | Threshold |
+|---|---|---|---|
+| **Harmful imagery** | Computer vision frame sampling (1 fps) | Fine-tuned ResNet / ViT classifier | >0.8 confidence → flag |
+| **Audio analysis** | ASR transcription + content classifier | Whisper ASR + custom classifier | Any prohibited keyword match → flag |
+| **Hate speech** | NLP on ASR transcript and metadata | Fine-tuned BERT multilingual | >0.75 confidence → flag |
+| **Misinformation** | Link extraction + against verified claim DB | Knowledge graph lookup | High-confidence match → flag |
+| **Copyright** | Audio fingerprinting + video fingerprinting | Dejavu / custom fingerprinter vs rights DB | Any match → flag |
+| **Spam / inauthentic** | Metadata anomaly detection | Rule-based heuristics + frequency analysis | Multiple signal match → flag |
+
+---
+
+## Human Review and Decision Flow
+
+<Steps>
+  <Step title="AI check completion">
+    All six automated checks complete and results are written to the moderation result record. If all checks pass, content is transitioned to `READY_FOR_PUBLISH` and the Content Service proceeds with DRM packaging and publication.
+  </Step>
+  <Step title="Flag aggregation">
+    If any check produces a flag, the moderation pipeline aggregates flags and routes the content to the Human Review queue. The `moderation.item.queued` event is produced to notify the Admin Control Plane.
+  </Step>
+  <Step title="Human reviewer assignment">
+    A moderator in the Admin Control Plane picks up the review item. The item includes: AI confidence scores per check, flagged frames or audio timestamps, the content thumbnail, title, and description. Moderation SLA: 4 hours for standard queue; 30 minutes for escalated queue.
+  </Step>
+  <Step title="Reviewer decision">
+    Reviewer selects one of four outcomes: **Approve** (clear content), **Remove** (violating content), **Age-gate** (restrict to 18+), **Request creator edit** (minor issue, creator given opportunity to re-upload).
+  </Step>
+  <Step title="Outcome dispatch">
+    The decision is recorded in the moderation audit log. The appropriate event is produced: `moderation.approved`, `moderation.removed`, or `moderation.edit_requested`. Content Service and Notification Service both consume these events.
+  </Step>
+  <Step title="Creator notification">
+    Notification Service sends the creator an in-app and email notification with the outcome. Removal notifications include the specific violation category. Creator can view the full decision in their Creator Dashboard under "Policy Decisions".
+  </Step>
+  <Step title="Appeal window">
+    For `moderation.removed` decisions, creators have a 14-day window to submit an appeal via the Creator Dashboard. Appeal enters a dedicated escalated review queue. Second reviewer handles the appeal — the original reviewer cannot review the same appeal.
+  </Step>
+</Steps>
+
+---
+
+## Repeat Violation Tracking
+
+The moderation system records all violation decisions against the creator account. Escalating penalties apply:
+
+| Violation Count (rolling 90 days) | Penalty |
+|---|---|
+| 1st violation | Warning. No restriction. |
+| 2nd violation | 7-day upload suspension. Creator notified. |
+| 3rd violation | 30-day upload suspension. Revenue share paused for suspension period. |
+| 4th violation | Permanent suspension reviewed by Trust & Safety team. Creator notified of manual review. |
+| Any severe violation (CSAM, credible threat) | Immediate permanent suspension. Automated referral protocol activated regardless of prior history. |
+
+---
+
+## Kafka Topics Used
+
+| Topic | Direction | Purpose |
+|---|---|---|
+| `moderation.check.requested` | Internal | Triggers parallel AI check workers |
+| `moderation.flagged` | Produced | Consumed by Content Service (hold publication), Admin Control Plane (queue review item) |
+| `moderation.approved` | Produced | Consumed by Content Service (release to publish) |
+| `moderation.removed` | Produced | Consumed by Content Service (mark removed), Notification Service (notify creator) |
+
+---
+
+## Failure Handling
+
+| Failure | Behaviour |
+|---|---|
+| **One AI check worker unavailable** | Content is routed to human review queue regardless of other check results. A `DEGRADED_AI` flag is attached to the queue item so the reviewer knows which check could not be completed automatically. |
+| **All AI checks unavailable** | Upload succeeds but content is held in `PENDING_MODERATION`. Human review queue is activated for all new uploads until AI workers recover. On-call alert triggered. |
+| **Human review SLA breach** (item > 4 h in queue) | Automated escalation: item moves to the escalated queue and a Slack alert is sent to the on-call Trust & Safety shift lead. |
+| **Copyright DB unavailable** | Copyright check skipped. Item proceeds without copyright validation. Item is flagged for a deferred copyright check (background job within 24 h). |
+
+---
+
+## Related Pages
+
+- [Content Service](/services/content-service)
+- [Admin Control Plane](/services/admin-control-plane)
+- [Creator Dashboard](/services/creator-dashboard)

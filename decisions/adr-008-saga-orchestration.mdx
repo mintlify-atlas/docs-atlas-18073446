@@ -1,0 +1,88 @@
+---
+title: "ADR-008: Orchestration-Based Saga via Temporal.io"
+sidebarTitle: ADR-008 Saga Orchestration
+description: Decision to implement distributed multi-service transactions as orchestration-based sagas using Temporal.io, with compensating transaction support for rollback.
+icon: route
+---
+
+<Info>
+  **Status: Accepted** — Adopted for MCSP v1.0. Choreography-based saga used only for simple two-service flows that do not require compensation.
+</Info>
+
+## Context
+
+Several business workflows span multiple independent services and require rollback if any step fails permanently:
+
+1. **Content publication**: Upload Service → Transcoding → DRM Packaging → Moderation Check → CDN Pre-warm → Content Service publish. Failure midway must roll back visibility flags and CDN assets.
+2. **Subscription upgrade**: Payment charge → Entitlement update → Notification → Creator revenue adjustment. A successful charge followed by a failed entitlement update must trigger a refund.
+3. **Creator payout**: Revenue calculation → Balance lock → Payment disbursement → Ledger record. A failed disbursement after a successful balance lock must release the balance lock.
+
+These workflows are not well-modelled as a single database transaction — they span services with independent data stores. The two standard patterns for distributed long-running transactions are:
+- **Choreography-based saga**: Each service reacts to events and publishes its own completion/failure events. No central coordinator.
+- **Orchestration-based saga**: A central orchestrator directs each step and handles compensation logic.
+
+---
+
+## Decision
+
+Use **orchestration-based sagas via Temporal.io** for all multi-step cross-service workflows that require compensating transactions.
+
+Temporal workflows (written in Go or Java) encode the step sequence as a workflow function. Each step is a Temporal activity that wraps the actual service call. The Temporal engine durably persists workflow state — if the worker crashes mid-workflow, execution resumes from the last completed activity on restart.
+
+Compensating transactions are modelled as explicit rollback activities registered on each saga step. If an activity fails after all retries, the saga orchestrator invokes the registered compensation activities in reverse order.
+
+For simple two-service event chains that do not require compensation (e.g., publishing an engagement event from the Engagement Service to be consumed by the ML pipeline), choreography-based Kafka events remain the appropriate pattern — Temporal is not applied indiscriminately.
+
+---
+
+## Alternatives Considered
+
+<AccordionGroup>
+  <Accordion title="Alternative A: Choreography-based saga (Kafka events only)">
+    **Description:** Each service publishes a completion or failure event to Kafka. The next service in the chain picks up the event and proceeds. Compensation is handled by each service locally, triggered by a failure event from the next service.
+
+    **Why not selected for complex flows:** Compensation logic becomes distributed across all participant services. Debugging a failed saga requires reconstructing the event sequence from multiple Kafka topics. There is no single place to inspect the state of an in-progress multi-step transaction. Race conditions between failure events and compensation events require careful design. For complex workflows with 4+ stages and compensation requirements, the coordination logic embedded in each service grows unsustainably. Choreography is retained for simple two-service event flows where compensation is not required.
+  </Accordion>
+  <Accordion title="Alternative B: AWS Step Functions">
+    **Description:** Use AWS Step Functions as the workflow engine, with Lambda or ECS task states.
+
+    **Why noted as viable but not selected:** Step Functions is a strong alternative for AWS-native teams. It provides visual workflow editing and durable state management. Limitations for this use case: vendor lock-in at the workflow orchestration layer (a core infrastructure component), per-state-transition pricing that can become significant at high workflow volume, and less flexibility in the compensation logic model compared to Temporal's programmatic workflow definition. Step Functions is noted as a viable choice for teams with strong AWS alignment.
+  </Accordion>
+  <Accordion title="Alternative C: XA distributed transactions (2PC)">
+    **Description:** Use the two-phase commit protocol across service databases to achieve atomicity.
+
+    **Why rejected:** 2PC requires all participant data stores to support XA transactions. Redis, Kafka, and the payment processors do not support XA. 2PC also introduces coordinator lock-in — a coordinator failure during the commit phase leaves all participants in a locked state. Distributed transaction coordinators are difficult to operate reliably at scale. Not viable given the heterogeneous data stores involved.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Consequences
+
+- All multi-step saga workflows are visible in Temporal's UI — step completion, current state, failure reasons, and compensation history are queryable in one place.
+- Temporal adds a self-hosted infrastructure component (Temporal server + persistence store, typically Cassandra or Postgres). This is operational overhead but is well-understood and widely deployed.
+- Developers writing saga workflows must understand Temporal's activity and workflow model, including the determinism requirement for workflow code (workflow functions must be deterministic — no randomness or non-deterministic time calls inside workflow functions).
+- Temporal workflow history provides a durable audit trail for every saga execution — useful for compliance and debugging alike.
+
+---
+
+## Tradeoffs
+
+| Dimension | Choreography (Kafka) | Orchestration/Temporal (selected) | Step Functions |
+|---|---|---|---|
+| Saga state visibility | Distributed across topics | Single place (Temporal UI) | AWS console |
+| Compensation complexity | Per-service, distributed | Centralised in orchestrator | Centralised |
+| Deterministic replay | Via Kafka offset replay | Built-in (Temporal history) | Built-in |
+| Self-hosted complexity | None | Medium (Temporal cluster) | None (managed) |
+| Vendor lock-in | None (Kafka is portable) | None (Temporal is open-source) | High (AWS) |
+| Developer learning curve | Low | Medium | Low |
+| Suitable for simple flows | Yes | Overkill | Depends |
+
+---
+
+## Related
+
+- [Architecture Communication Model](/architecture/communication-model)
+- [Media Ingestion Pipeline](/pipelines/media-ingestion)
+- [Billing & Payments Pipeline](/pipelines/billing-payments)
+- [ADR-001 — Event-Driven Pipeline](/decisions/adr-001-event-driven-pipeline)

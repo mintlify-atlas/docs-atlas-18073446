@@ -1,0 +1,94 @@
+---
+title: "ADR-003: Nigeria Data Residency via IAM Policy"
+sidebarTitle: ADR-003 Nigeria Residency IAM
+description: Decision to enforce Nigeria data residency requirements at the IAM bucket policy layer rather than relying on application-level routing flags.
+icon: flag
+---
+
+import ResidencyImmutableCallout from '/snippets/residency-immutable-callout.mdx'
+
+<Info>
+  **Status: Accepted** — Adopted for MCSP v1.0. No superseding decision. Physical cluster separation deferred to v2.0.
+</Info>
+
+## Context
+
+Nigerian data privacy law (NDPR) requires that personally identifiable information and locally produced media content for Nigerian users be stored within Nigerian jurisdiction. At the time of initial architecture design, the platform must demonstrate a technically provable enforcement mechanism — not one that relies on application configuration that any engineer with sufficient permissions can override.
+
+Three layers of potential enforcement were evaluated:
+
+1. **Application flag** (`residency: NG` on the content record): Routing logic in the Upload Service inspects the flag and directs writes to the Nigeria-region bucket. This flags that app code can be bypassed by a bug, a misconfiguration, or a direct API call that omits the flag.
+
+2. **IAM bucket policy**: S3 bucket policy for the Nigeria bucket restricts `s3:PutObject` to only IAM roles that are explicitly granted the `rpe:write:nigeria` permission. The global bucket policy denies writes from those same roles. Enforcement is at the infrastructure layer, not the application layer.
+
+3. **Separate physical cluster**: Operate a completely separate Kubernetes cluster, database cluster, and VPC within Nigeria AWS region (af-south-1). All Nigerian user traffic is handled exclusively within that cluster. The highest isolation but the highest operational cost.
+
+The platform requires a solution that is cost-viable at v1.0 scale while providing a technically auditable compliance story.
+
+---
+
+## Decision
+
+Nigeria data residency is enforced via **IAM bucket policy as the sole authoritative control**. The application-level `residency: NG` flag is retained as a routing hint but is not the enforcement mechanism.
+
+The Nigeria-region S3 bucket (`mcsp-media-ng`) has a bucket policy that:
+- Denies `s3:PutObject` from any principal not in the `rpe:write:nigeria` IAM role set
+- Denies `s3:PutObject` with a destination region other than `af-south-1`
+- Denies `s3:GetObject` from CDN origins not associated with the MTN PoP (for Nigerian-resident content)
+
+The global bucket (`mcsp-media-global`) has a mirror policy that denies writes from `rpe:write:nigeria` roles — preventing dual-write accidents.
+
+<ResidencyImmutableCallout />
+
+This design passes a NDPR technical audit because residency enforcement is demonstrable at the IAM policy level, independent of application code.
+
+---
+
+## Alternatives Considered
+
+<AccordionGroup>
+  <Accordion title="Alternative A: Application-layer flag only">
+    **Description:** The Upload Service inspects a `residency` flag on the content object and routes the S3 write to the appropriate region. No IAM-level enforcement.
+
+    **Why rejected:** An application bug, missing flag, or direct database write that omits the flag would route Nigerian-resident content to the global bucket. This is not auditable as a technical control — it is a process control. Process controls fail under NDPR audit.
+  </Accordion>
+  <Accordion title="Alternative B: Separate physical cluster (v2.0 target)">
+    **Description:** Operate a fully isolated Kubernetes cluster, RDS cluster, Kafka cluster, and VPC within `af-south-1`. All traffic from Nigerian users — API, streaming, data — stays within the cluster. Zero cross-region data movement for Nigerian data.
+
+    **Why deferred to v2.0:** Operating two full production clusters doubles the baseline infrastructure cost. At v1.0 traffic volumes, this is not justified. The IAM policy approach provides a technically auditable compliance control at a fraction of the cost. Physical separation is the target state for v2.0 when revenue supports it.
+  </Accordion>
+  <Accordion title="Alternative C: Client-side geofencing">
+    **Description:** Use the client's GPS or IP to determine jurisdiction and enforce routing client-side.
+
+    **Why rejected:** Client-side controls can be bypassed via VPN or by a modified client. This provides no technical assurance at the data layer. Jurisdictional enforcement must be at the storage layer, not the network edge.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Consequences
+
+- IAM role grants for `rpe:write:nigeria` must be audited quarterly. Any unexpected principal with this grant is a compliance finding.
+- The Upload Service still sets the `residency` flag on content metadata — this drives CDN routing and the Creator Dashboard's "Residency" display. It is not the enforcement mechanism but it is still operationally accurate.
+- Multi-region S3 replication must explicitly exclude Nigerian-resident content from the global replication rule — this is enforced by the same IAM policy (replication role does not hold `rpe:write:nigeria`).
+
+---
+
+## Tradeoffs
+
+| Dimension | App-layer flag | IAM Policy (selected) | Separate cluster (v2.0) |
+|---|---|---|---|
+| Auditability | Low (code-dependent) | High (infra-layer) | Highest |
+| Bypass risk | High | Low | None |
+| Cost at v1.0 | Low | Low | High |
+| Operational complexity | Low | Medium | High |
+| NDPR audit outcome | Likely insufficient | Passes technical control | Passes with physical proof |
+
+---
+
+## Related
+
+- [Data Residency](/infrastructure/data-residency)
+- [Upload Service](/services/upload-service)
+- [Media Ingestion Pipeline](/pipelines/media-ingestion)
+- [ADR-002 — CDN-First Delivery](/decisions/adr-002-cdn-first-delivery)

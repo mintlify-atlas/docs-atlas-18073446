@@ -1,0 +1,67 @@
+---
+title: Playback Service
+sidebarTitle: Playback Service
+description: Manifest URL generation, subscription entitlement enforcement, DRM pre-authorisation, and resume position lookup.
+icon: play
+---
+
+## Purpose
+
+The Playback Service is the critical-path entry point for every viewer stream. It resolves entitlement, obtains DRM pre-authorisation, and generates a cryptographically signed CDN manifest URL — all before the client receives a single byte of media. Playback Service failure is the highest-severity incident category on the platform.
+
+<Warning>
+  **Minimum 3 replicas, dedicated node pool.** The Playback Service is the only application-layer service with a hard minimum replica count and dedicated Kubernetes node affinity. It must not share node resources with non-critical workloads.
+</Warning>
+
+---
+
+## Responsibilities
+
+| Responsibility | Detail |
+|---|---|
+| **Entitlement check** | Validates the user's subscription tier against the content's access level. Checks content visibility and geographic restrictions. Rejects requests for deleted or moderation-held content. |
+| **DRM pre-authorisation** | Calls the DRM License Server via gRPC to establish a session. A short-lived DRM session token (5-minute TTL) is returned to the client alongside the manifest URL. The client uses this token to obtain the full decryption license from the License Server. |
+| **CDN manifest URL generation** | Generates an HMAC-signed CDN URL: `HMAC(contentId + userId + sessionId + contentType + expiry, CDN_SECRET)`. URL TTL: 1 hour. The CDN validates this signature on every manifest request — the origin is never directly accessible. |
+| **Resume position lookup** | Queries the Engagement Service for the user's last-watched position for the requested content. Returns the resume offset to the client in the playback response. |
+| **Content type resolution** | Resolves `content_type` (VIDEO or AUDIO) from the Content Service. Encodes the content type in the signed manifest URL to route the CDN to the correct manifest file (video HLS/DASH vs audio-only HLS/DASH). |
+
+---
+
+## API Surface
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/play/{contentId}` | Bearer | Request a playback session; returns manifest URL, DRM token, resume position |
+| `GET` | `/api/v1/play/{contentId}/license` | DRM token | Proxy endpoint for DRM license requests from client player |
+
+---
+
+## Data Owned
+
+The Playback Service owns no persistent data. It is a pure orchestration service — all state is held by the Auth Service (JWT), Content Service (metadata), Engagement Service (resume position), and the DRM License Server (session tokens).
+
+---
+
+## Kafka Topics
+
+The Playback Service does not produce or consume Kafka topics. Playback events (started, progress, completed) are emitted directly by the client player to the Engagement Service API.
+
+---
+
+## Failure Behaviour
+
+| Failure | Behaviour |
+|---|---|
+| **DRM License Server unavailable** | Playback session creation fails. Clients that already have an active DRM license can continue playing until the license TTL expires (5 minutes). New sessions cannot start. Alerting triggers P0 incident. |
+| **Content Service unavailable** | `GET /play/{contentId}` returns `503`. Retried by client with exponential backoff. No degraded mode — content type and visibility data are required before issuing a manifest URL. |
+| **Engagement Service unavailable** | Playback session proceeds without a resume position. The client starts from the beginning of the content. Non-fatal degradation. |
+| **CDN key unavailable (CDN_SECRET)** | Manifest URL generation fails. All concurrent playback sessions are affected. The secret is fetched from Secrets Manager at startup and cached in-process — a rotation without a rolling restart causes a brief `500` window during key changeover. |
+
+---
+
+## Related Pages
+
+- [DRM & Content Security](/pipelines/drm-content-security)
+- [Adaptive Streaming & CDN Delivery](/pipelines/adaptive-streaming)
+- [Engagement Service](/services/engagement-service)
+- [User & Auth Service](/services/auth-service)

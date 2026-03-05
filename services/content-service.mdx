@@ -1,0 +1,77 @@
+---
+title: Content Service
+sidebarTitle: Content Service
+description: Content metadata lifecycle, visibility management, publication status, search indexing, and the authoritative content record.
+icon: film
+---
+
+## Purpose
+
+The Content Service is the authoritative owner of the content record after the media pipeline completes. It manages the content metadata lifecycle from `DRAFT` through to `PUBLISHED` and `DELETED`, enforces content visibility rules, and serves as the data source for discovery flows (search, feed, related content). The Content Service does not handle media bytes — it references object storage locations, not file content.
+
+---
+
+## Responsibilities
+
+| Responsibility | Detail |
+|---|---|
+| **Content record ownership** | Maintains the canonical content record: title, description, tags, category, language, visibility, `content_type` (VIDEO/AUDIO), publication status, and storage references. |
+| **Publication status management** | Transitions content through statuses (`DRAFT` → `PROCESSING` → `PUBLISHED` → `UNLISTED` → `DELETED`) in response to pipeline events and creator or admin actions. |
+| **Visibility enforcement** | Enforces `PUBLIC`, `UNLISTED`, and `PRIVATE` visibility at read time. Unlisted content is accessible only via direct URL. Private content is accessible only to the owning creator. |
+| **Search indexing** | On `PUBLISHED` status, triggers a document write to Elasticsearch containing: `content_id`, `title`, `description`, `tags`, `category`, `content_type`, `creator_id`, `language`, `publish_timestamp`. |
+| **ML feed integration** | Returns ranked content IDs from the ML Inference Service to serve the home feed API via a thin pass-through. The Content Service does not perform ranking — it fetches metadata for pre-ranked IDs provided by the ML layer. |
+| **Content deletion** | Creator-initiated or admin-initiated deletion: marks record as `DELETED`, triggers CDN cache invalidation, and emits a deletion event for downstream consumers (ML Feature Store, Elasticsearch, Engagement Service) to clean up associated data. |
+
+---
+
+## API Surface
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/content/{contentId}` | Bearer or None (public) | Fetch content metadata |
+| `PATCH` | `/api/v1/content/{contentId}` | Bearer (Creator, owner only) | Update title, description, tags, or thumbnail |
+| `DELETE` | `/api/v1/content/{contentId}` | Bearer (Creator / Platform Admin) | Delete content |
+| `GET` | `/api/v1/content/feed` | Bearer | Personalised home feed (ML-ranked) |
+| `GET` | `/api/v1/content/trending` | Bearer or None | Trending content list |
+| `GET` | `/api/v1/content/search` | Bearer or None | Full-text search with filters |
+| `GET` | `/api/v1/content/{contentId}/related` | Bearer or None | ML-ranked related content |
+| `PATCH` | `/api/v1/content/{contentId}/visibility` | Bearer (Creator) | Change visibility (PUBLIC / UNLISTED / PRIVATE) |
+
+---
+
+## Data Owned
+
+| Store | Schema |
+|---|---|
+| **Postgres** | `content` (content_id, creator_id, title, description, tags[], category, language, content_type, visibility, status, manifest_url, thumbnail_url, residency, published_at, deleted_at) |
+| **Elasticsearch** | Content documents indexed by `content_id`; full-text search across title, description, tags, category |
+| **Redis** | Trending list cached at 5-minute TTL; static content metadata at 1-hour TTL |
+
+---
+
+## Kafka Topics
+
+| Topic | Action |
+|---|---|
+| `media.drm.packaged` | **Consumed** — triggers status transition to `PUBLISHED` |
+| `media.published` | **Produced** — fan-out to ML Feature Store, Notification Service, Search Indexer |
+| `moderation.flagged` | **Consumed** — triggers status transition based on moderation decision |
+
+---
+
+## Failure Behaviour
+
+| Failure | Behaviour |
+|---|---|
+| **Elasticsearch unavailable** | Search and discovery APIs return `503`. Home feed falls back to trending list. Playback is unaffected — playback does not depend on Elasticsearch. |
+| **ML Inference Service unavailable** | Home feed falls back to the trending content list. Graceful degradation per [Principle 11](/overview/design-principles). |
+| **Content record missing at playback** | Playback Service receives a `404` from Content Service. Client receives a clear not-found error. |
+
+---
+
+## Related Pages
+
+- [Playback Service](/services/playback-service)
+- [Engagement Service](/services/engagement-service)
+- [ML Recommendations Pipeline](/pipelines/ml-recommendations)
+- [Content Moderation Pipeline](/pipelines/content-moderation)

@@ -1,0 +1,66 @@
+---
+title: Scale Assumptions
+sidebarTitle: Scale Assumptions
+description: Year 1 targets and Year 3 projections for traffic, storage, and content volume — the basis for all capacity and cost models.
+icon: chart-bar
+---
+
+<Info>
+  These figures are planning targets, not contractual commitments. All architectural decisions in this documentation are validated against the Year 1 figures. Year 3 projections are used to verify that the architecture does not require fundamental rework at projected growth.
+</Info>
+
+## Traffic Scale
+
+| Metric | Year 1 Estimate | Year 3 Projection |
+|---|---|---|
+| Registered users | 5 million | 20 million |
+| Monthly active users | 2 million | 8 million |
+| Peak concurrent streams | 150,000 | 600,000 |
+| Content uploads per day | 15,000 items | 60,000 items |
+| Total content items | 3 million | 20 million |
+| Peak API RPS | 50,000 RPS | 200,000 RPS |
+| Peak CDN egress | ~1.5 Tbps | ~6 Tbps |
+| Active creator accounts | 50,000 | 200,000 |
+| Monthly subscription transactions | 200,000 | 1 million |
+
+---
+
+## Bandwidth Profile
+
+| Scenario | Estimate |
+|---|---|
+| Average video stream bitrate (blended 720p/1080p) | ~3.5 Mbps |
+| Average audio stream bitrate (blended 128/256 kbps) | ~0.2 Mbps |
+| 150,000 concurrent streams (~10% audio) | ~480 Gbps sustained |
+| Peak factor (1.5×) | ~720 Gbps |
+| CDN over-provisioning buffer (2×) | ~1.5 Tbps capacity required |
+| Nigeria origin bandwidth (residency content) | ~10 Gbps |
+| Upload ingress | ~5 Gbps (15,000 video + 5,000 audio uploads/day) |
+
+---
+
+## Storage Growth Model — Year 1
+
+| Component | Estimate |
+|---|---|
+| Raw video (pre-transcode staging, 30-day retention) | ~290 TB |
+| Raw audio (pre-transcode staging, 30-day retention) | ~10 TB |
+| Transcoded video — hot tier (top 10% of catalogue, all resolutions) | ~1.9 PB |
+| Transcoded audio — hot tier (top 10% of audio catalogue, all bitrate variants) | ~50 TB |
+| Transcoded video — cold tier (remaining video catalogue) | ~4.8 PB |
+| Transcoded audio — cold tier (remaining audio catalogue) | ~150 TB |
+| Nigeria Residency storage (~5% of uploads) | ~200 TB |
+| Cover art, thumbnails, and metadata | ~20 TB |
+| ML training data (user events, feature store) | ~100 TB |
+| Logs, metrics, audit data | ~50 TB |
+| **Total (Year 1)** | **~7.6 PB** |
+
+<Tip>
+  Hot storage costs approximately 5–10× cold storage per GB. The automated tiering engine (see [ADR-005](/decisions/adr-005-storage-tiering-engine)) keeps the hot tier limited to the top 10% of content by view frequency, reducing storage OPEX by 60–70% compared to a fully hot catalogue.
+</Tip>
+
+---
+
+## Concurrency Model
+
+At 150,000 peak concurrent streams, MCSP does not serve segments from origin. All media delivery routes through CDN edge nodes — origin bandwidth is bounded by ingestion and transcoding throughput, not by playback egress. See [ADR-002](/decisions/adr-002-cdn-first-delivery) for the CDN-first delivery decision.

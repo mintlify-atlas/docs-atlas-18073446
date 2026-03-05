@@ -1,0 +1,63 @@
+---
+title: Risk Register
+sidebarTitle: Risk Register
+description: Identified architecture and operational risks, likelihood, impact rating, and mitigation strategies for the MTN Cloud Streaming Platform v1.0.
+icon: triangle-exclamation
+---
+
+## Risk Assessment Framework
+
+**Likelihood scale:** High (over 50% probability within 12 months), Medium (10–50%), Low (under 10%)
+
+**Impact scale:** Critical (service-ending or compliance-failing event), High (significant user impact or revenue loss), Medium (degraded experience or limited outage), Low (minor operational inconvenience)
+
+**Status:** Open (not fully mitigated), Mitigated (controls in place), Accepted (known risk, no mitigation planned)
+
+---
+
+## Risk Register
+
+| # | Risk | Category | Likelihood | Impact | Mitigation | Status |
+|---|---|---|---|---|---|---|
+| R-001 | Nigeria-resident content inadvertently stored in global bucket | Compliance | Medium | Critical | IAM bucket policy as authoritative enforcement ([ADR-003](/decisions/adr-003-nigeria-residency-iam)); quarterly IAM grant audit | Mitigated |
+| R-002 | CDN signed URL leak enabling unauthorised playback | Security | Medium | High | DRM license bound to user session (not URL alone); session-bound visual watermark for forensic identification | Mitigated |
+| R-003 | Widevine L3 / PlayReady SL2000 screen capture on desktop | Security | High | Medium | Visual watermarking forensic ID; Widevine L1 enforcement on Android; premium content L1-required policy | Accepted |
+| R-004 | Payment processor (Paystack or Stripe) outage during billing cycle | Operational | Medium | High | Temporal retry with exponential backoff (max 3 attempts, 1 h apart); deferred batch payout on outage recovery; dead-letter queue for failed charges | Mitigated |
+| R-005 | ML recommendation model surfaces biased results by demographic | Compliance / Reputational | Medium | High | Monthly bias audit required before model promotion; A/B significance gate; [ML pipeline](/pipelines/ml-recommendations) promotion policy | Mitigated |
+| R-006 | Long-tail content restore latency (Glacier) exceeds viewer expectation | UX | High | Medium | HTTP 202 + `Retry-After` UX pattern on archived content; tiering thresholds set conservatively (90 days, < 10 views) to archive only truly inactive content | Mitigated |
+| R-007 | Multi-DRM provider (Axinom/EZDRM) outage blocks all premium playback | Operational | Low | Critical | Provider SLA monitoring; Playback Service circuit breaker with 503 + `Retry-After`; evaluate dual-provider failover for v2.0 | Open |
+| R-008 | NGN/USD FX rate extreme volatility causing creator payout disputes | Financial | Medium | High | FX rate locked at payout period start; creator payout policy disclosed prominently in Creator Dashboard | Mitigated |
+| R-009 | Kafka partition rebalance causing consumer lag spike during peak traffic | Operational | Medium | Medium | Over-provision partitions (future capacity headroom); separate consumer groups per service; Kafka lag alerting thresholds set below SLA impact threshold | Mitigated |
+| R-010 | Redis Cluster failure affecting real-time counters and session state | Operational | Low | High | 3-replica Redis Cluster with automatic failover; `jedis`/`lettuce` failover client config; write-through to Postgres for durable engagement data within 1 s | Mitigated |
+
+---
+
+## Open Risks
+
+The following risks are currently rated **Open** — mitigations are insufficient or not yet implemented:
+
+<Warning>
+  **R-007 — Multi-DRM provider single point of failure** is the highest-priority open risk. A single multi-DRM provider handles license issuance for all DRM ecosystems (Widevine, FairPlay, PlayReady). Provider unavailability blocks all premium content playback regardless of DRM system. Dual-provider failover is targeted for v2.0. In the meantime, provider SLA is the primary control (monitored via uptime alerting).
+</Warning>
+
+---
+
+## Risk Review Schedule
+
+| Review type | Frequency | Owner |
+|---|---|---|
+| Full risk register review | Quarterly | Platform Architect + Security Lead |
+| IAM grant audit (R-001) | Quarterly | Security Lead |
+| Bias audit (R-005) | Before each model promotion | ML Platform Team |
+| Incident-triggered update | After any Severity 1 incident | On-call Incident Commander |
+
+---
+
+## Related Pages
+
+- [Security Design](/infrastructure/security-design)
+- [Data Residency](/infrastructure/data-residency)
+- [DRM & Content Security](/pipelines/drm-content-security)
+- [ML Recommendations Pipeline](/pipelines/ml-recommendations)
+- [ADR-003 — Nigeria Residency](/decisions/adr-003-nigeria-residency-iam)
+- [ADR-007 — Dual-Currency Payout](/decisions/adr-007-dual-currency-payout)

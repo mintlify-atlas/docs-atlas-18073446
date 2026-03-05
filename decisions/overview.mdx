@@ -1,0 +1,41 @@
+---
+title: Architecture Decision Records
+sidebarTitle: ADR Overview
+description: Index of all architecture decisions for the MTN Cloud Streaming Platform. Each record documents context, the selected option, rejected alternatives, and known tradeoffs.
+icon: file-signature
+---
+
+## What is an ADR?
+
+An Architecture Decision Record (ADR) captures a significant design or technology choice, the context that led to it, and the tradeoffs accepted. They are write-once records — decisions are not revised in place. A superseding decision results in the original ADR being marked `Superseded` and a new ADR being created.
+
+---
+
+## Decision Index
+
+<CardGroup cols={2}>
+  <Card title="ADR-001 — Event-Driven Pipeline" icon="arrows-split-up-and-left" href="/decisions/adr-001-event-driven-pipeline">
+    **Status: Accepted** — Async Kafka-based pipeline for all media processing stages in place of synchronous HTTP chaining.
+  </Card>
+  <Card title="ADR-002 — CDN-First Media Delivery" icon="tower-broadcast" href="/decisions/adr-002-cdn-first-delivery">
+    **Status: Accepted** — All media delivered via CDN; origin storage (S3) is never directly client-accessible.
+  </Card>
+  <Card title="ADR-003 — Nigeria Residency via IAM" icon="flag" href="/decisions/adr-003-nigeria-residency-iam">
+    **Status: Accepted** — Nigeria data residency enforced at the IAM bucket policy layer, not the application layer.
+  </Card>
+  <Card title="ADR-004 — Multi-DRM CMAF" icon="lock" href="/decisions/adr-004-multi-drm-cmaf">
+    **Status: Accepted** — CMAF CENC+CBCS dual encryption for a single segment set serving all DRM ecosystems.
+  </Card>
+  <Card title="ADR-005 — Automated Storage Tiering" icon="layer-group" href="/decisions/adr-005-storage-tiering-engine">
+    **Status: Accepted** — Automated hot/cold/archive tiering engine based on access frequency thresholds.
+  </Card>
+  <Card title="ADR-006 — Two-Tower ML Model" icon="brain" href="/decisions/adr-006-two-tower-ml">
+    **Status: Accepted** — Two-tower neural network with ANN (FAISS/ScaNN) for personalised content retrieval at catalogue scale.
+  </Card>
+  <Card title="ADR-007 — Dual-Currency Payout" icon="credit-card" href="/decisions/adr-007-dual-currency-payout">
+    **Status: Accepted** — Paystack (NGN) + Stripe (USD) dual-processor architecture with FX rate locking at payout period start.
+  </Card>
+  <Card title="ADR-008 — Saga Orchestration" icon="route" href="/decisions/adr-008-saga-orchestration">
+    **Status: Accepted** — Orchestration-based distributed sagas via Temporal.io for multi-service transactions.
+  </Card>
+</CardGroup>

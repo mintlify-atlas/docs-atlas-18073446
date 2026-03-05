@@ -1,0 +1,125 @@
+---
+title: High-Level Architecture Diagram
+sidebarTitle: Architecture Diagram
+description: Full platform architecture diagram showing all layers — clients, edge, application services, media pipeline, ML, storage, billing, and observability.
+icon: diagram-project
+---
+
+The diagram below represents the complete MCSP component graph at v1. Arrows indicate the primary data or event flow direction. All flows from the client layer pass through the edge zone — no service in the application layer is directly reachable from the internet.
+
+```mermaid
+graph TB
+  subgraph CLIENTS["Client Layer"]
+    WEB[Web App\nReact/Next.js]
+    IOS[iOS App\nSwift/AVFoundation]
+    AND[Android App\nKotlin/ExoPlayer]
+    TV[Smart TV\nTizen/webOS]
+  end
+
+  subgraph EDGE["Edge & CDN Layer"]
+    WAF[WAF / DDoS Shield]
+    CDN[Multi-Region CDN\nEdge Nodes]
+    APIGW[API Gateway\nAuth / Rate Limit / Routing]
+  end
+
+  subgraph APPSVCS["Application Services"]
+    UASVC[User & Auth Service]
+    UPLOADSVC[Upload Service]
+    CONTSVC[Content Service]
+    PLAYSVC[Playback Service]
+    SUBSVC[Subscription Service]
+    NOTIFSVC[Notification Service]
+    CREATORSVC[Creator Dashboard]
+    ENGAGEMENTSVC[Engagement Service]
+    ADMINSVC[Admin Control Plane]
+  end
+
+  subgraph MEDIA["Media Processing Pipeline"]
+    INGESTOR[Upload Ingestor]
+    CPRIGHT[Copyright Scanner]
+    TRANSCODER[Transcoding Cluster]
+    DRMPACK[DRM Packager]
+    ARTGEN[Art / Thumbnail Generator]
+    INDEXER[Metadata Indexer]
+  end
+
+  subgraph MLPIPE["AI / ML Pipeline"]
+    EVTCOL[Event Collector]
+    FEATSTORE[Feature Store]
+    TRAINER[Offline Trainer]
+    INFER[Online Inference]
+    MODSVC[AI Moderation]
+  end
+
+  subgraph STORE["Storage Layer"]
+    HOT[Hot Object Store]
+    COLD[Cold Object Store]
+    NG_ZONE[Nigeria Residency Zone]
+    RDBMS[(Postgres Multi-AZ)]
+    CACHE[(Redis Cluster)]
+    SEARCH[(Elasticsearch)]
+    TSDB[(Time-Series DB)]
+  end
+
+  subgraph DRMSVCS["DRM Services"]
+    LICSVR[License Server]
+    KMS[KMS / HSM]
+  end
+
+  subgraph BILLING["Billing & Payments"]
+    BILLENG[Billing Engine]
+    FXSVC[FX Service]
+    PAYOUTSVC[Payout Service]
+  end
+
+  subgraph OBS["Observability"]
+    LOGS[Centralised Logging]
+    METRICS[Prometheus / Grafana]
+    TRACES[Distributed Tracing]
+    AUDIT[Audit Log Store]
+  end
+
+  CLIENTS -->|HTTPS| WAF
+  WAF --> CDN
+  WAF --> APIGW
+  CDN -->|Signed URL| HOT
+  CDN -->|Residency Content| NG_ZONE
+  APIGW --> UASVC & UPLOADSVC & CONTSVC & PLAYSVC & SUBSVC & CREATORSVC & ENGAGEMENTSVC & ADMINSVC
+  UPLOADSVC -->|presigned URL| HOT
+  UPLOADSVC -->|presigned URL| NG_ZONE
+  UPLOADSVC -->|media.upload.initiated| INGESTOR
+  ENGAGEMENTSVC --> RDBMS & CACHE
+  ENGAGEMENTSVC -->|engagement.events| EVTCOL
+  PLAYSVC --> LICSVR
+  PLAYSVC --> CDN
+  INGESTOR --> CPRIGHT --> TRANSCODER --> DRMPACK
+  DRMPACK --> HOT & NG_ZONE
+  TRANSCODER --> ARTGEN & INDEXER
+  INDEXER --> SEARCH
+  EVTCOL --> FEATSTORE --> TRAINER
+  TRAINER --> INFER --> CONTSVC
+  MODSVC --> ADMINSVC
+  HOT <-->|Auto Tier| COLD
+  LICSVR --> KMS
+  SUBSVC --> BILLENG --> FXSVC & PAYOUTSVC
+  APPSVCS -->|Events| LOGS & METRICS
+  ADMINSVC -->|Writes| AUDIT
+```
+
+---
+
+## Layer Summary
+
+| Layer | Primary Role |
+|---|---|
+| **Client** | Web, iOS, Android, and Smart TV applications consuming the platform |
+| **Edge** | WAF, DDoS protection, CDN segment delivery, API Gateway auth and routing |
+| **Application Services** | Business logic microservices — stateless, independently scalable |
+| **Media Processing** | Fully async pipeline: ingest → scan → transcode → package → index |
+| **AI / ML** | Behavioural event collection, feature engineering, recommendation inference, AI moderation |
+| **Storage** | Purpose-fit stores: Postgres, object storage (hot/cold/residency), Elasticsearch, Redis, time-series |
+| **DRM** | License server fleet and HSM-backed key management |
+| **Billing** | Subscription lifecycle, recurring charges, FX conversion, creator payouts |
+| **Observability** | Logs, metrics, traces, and the append-only audit store |
+
+For a detailed breakdown of each layer's responsibilities, scaling model, and failure domains, see [Layer Breakdown](/architecture/layer-breakdown).

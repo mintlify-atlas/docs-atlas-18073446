@@ -1,0 +1,90 @@
+---
+title: Engagement Service
+sidebarTitle: Engagement Service
+description: Likes, comments, shares, view counts, watch history, playlists, and creator subscriptions — the single owner of all user interaction state.
+icon: heart
+---
+
+import IdempotencyCallout from '/snippets/idempotency-callout.mdx'
+
+## Purpose
+
+The Engagement Service is the sole owner of all user interaction state on MCSP. It is intentionally isolated from the Content Service to prevent high-frequency engagement writes on viral content (thousands of concurrent view count updates, like storms) from contending with content metadata reads and degrading the discovery and playback paths.
+
+<Note>
+  **Write path is Redis-first.** View count increments and like count changes write to Redis immediately (atomic `INCR` / `SET`) and flush to Postgres in batches via background jobs. This prevents Postgres write saturation on viral content. Reads during the flush window may return slightly stale counts — this is an accepted and documented eventual consistency tradeoff.
+</Note>
+
+---
+
+## Responsibilities
+
+| Domain | Detail |
+|---|---|
+| **Likes / Dislikes** | Records per-user like/dislike state in Postgres. Aggregated counts cached in Redis with write-through on each change. A user may not simultaneously hold both a like and a dislike on the same content — enforced at the service layer. |
+| **Comments & Replies** | Comment threads stored in Postgres: `content_id`, `user_id`, `parent_comment_id` (for replies), `body`, `timestamp`, `soft_delete_flag`. Pagination via cursor. Creators may delete any comment on their own content. |
+| **Shares** | Share events (platform and external) recorded for analytics purposes. Canonical share URL construction delegates to the Content Service. |
+| **View Counts** | Increments written to Redis (atomic `INCR` per `contentId`). Background job flushes Redis counters to Postgres every 60 seconds and clears the Redis delta. |
+| **Watch History** | Per-user watch history in Postgres: `user_id`, `content_id`, `last_watched_at`, `progress_pct`. Resume position read by the Playback Service at session start. User-initiated history clear cascades to all records. |
+| **Playlists** | CRUD for named playlists. Playlist items stored as an ordered list in Postgres. |
+| **Creator Subscriptions** | Viewer-to-creator subscription relationships in Postgres. Subscription counts cached in Redis. Subscribe/unsubscribe events emitted to Kafka for fan-out to the Notification Service. |
+| **ML signal emission** | All engagement events (likes, completions, replays, skips) are emitted to `user.engagement.events` for the ML Feature Store. |
+
+<IdempotencyCallout />
+
+---
+
+## API Surface
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/content/{contentId}/like` | Bearer | Like a content item |
+| `DELETE` | `/api/v1/content/{contentId}/like` | Bearer | Remove like |
+| `POST` | `/api/v1/content/{contentId}/dislike` | Bearer | Dislike a content item |
+| `GET` | `/api/v1/content/{contentId}/comments` | Bearer or None | Fetch paginated comment thread |
+| `POST` | `/api/v1/content/{contentId}/comments` | Bearer | Post a comment or reply |
+| `DELETE` | `/api/v1/content/{contentId}/comments/{commentId}` | Bearer | Delete own comment (or creator deleting on own content) |
+| `GET` | `/api/v1/users/me/history` | Bearer | Fetch watch history |
+| `DELETE` | `/api/v1/users/me/history` | Bearer | Clear watch history |
+| `GET` | `/api/v1/users/me/playlists` | Bearer | List playlists |
+| `POST` | `/api/v1/users/me/playlists` | Bearer | Create playlist |
+| `POST` | `/api/v1/users/me/playlists/{playlistId}/items` | Bearer | Add content to playlist |
+| `POST` | `/api/v1/creators/{creatorId}/subscribe` | Bearer | Subscribe to creator |
+| `DELETE` | `/api/v1/creators/{creatorId}/subscribe` | Bearer | Unsubscribe from creator |
+
+---
+
+## Data Owned
+
+| Store | Content |
+|---|---|
+| **Postgres** | `likes`, `comments`, `shares`, `watch_history`, `playlists`, `playlist_items`, `creator_subscriptions` |
+| **Redis** | `view_count:{contentId}` (atomic counters), `like_count:{contentId}`, `sub_count:{creatorId}`, `like_state:{userId}:{contentId}` |
+
+---
+
+## Kafka Topics
+
+| Topic | Action |
+|---|---|
+| `user.engagement.events` | **Produced** — all engagement events (like, view, completion, skip, replay) |
+| `engagement.subscription.changed` | **Produced** — subscribe/unsubscribe events for Notification Service fan-out |
+
+---
+
+## Failure Behaviour
+
+| Failure | Behaviour |
+|---|---|
+| **Redis unavailable** | Like/comment writes fall back to direct Postgres writes (higher latency, higher DB load). View count increments queue client-side and retry on reconnect — brief counts may be understated. |
+| **Engagement Service unavailable** | Playback continues (resume position omitted). Like/comment writes queued client-side for retry. View counts tolerate brief gaps via eventual consistency. |
+| **Flush job failure** | Redis counters accumulate. On recovery, flush job processes all accumulated deltas. No data is lost — Redis is the write buffer, not a cache that can be dropped. |
+
+---
+
+## Related Pages
+
+- [ML Recommendations Pipeline](/pipelines/ml-recommendations)
+- [Content Service](/services/content-service)
+- [Playback Service](/services/playback-service)
+- [Communication Model — Engagement Flow](/architecture/communication-model)

@@ -1,0 +1,36 @@
+---
+title: Glossary
+sidebarTitle: Glossary
+description: Definitions of technical terms, acronyms, and platform-specific identifiers used throughout the MTN Cloud Streaming Platform documentation.
+icon: book
+---
+
+## Terms and Definitions
+
+| Term | Definition |
+|---|---|
+| **AAC-LC** | Advanced Audio Coding – Low Complexity. The audio codec used for all audio encoding in the MCSP media pipeline. Outputs are stereo and mono variants at multiple bitrates. |
+| **ABR** | Adaptive Bitrate. A streaming technique where the client dynamically selects the highest-quality representation the current network conditions can sustain without rebuffering. |
+| **ANN** | Approximate Nearest Neighbour. A class of algorithm (including FAISS and ScaNN) that retrieves the approximate closest vectors in high-dimensional embedding space without exhaustive search. Used in Stage 1 of the recommendation retrieval pipeline. |
+| **AZ** | Availability Zone. An isolated data centre or group of data centres within a cloud region. The MCSP production deployment spans at least 3 AZs per region. |
+| **CBCS** | Cipher Block Chaining Scheme. The AES-CBC encryption profle required by Apple FairPlay DRM. One of the two profiles applied during CMAF dual-encryption packaging. |
+| **CDN** | Content Delivery Network. A geographically distributed network of cache servers that deliver media segments to end users from the closest point of presence. MCSP uses CloudFront (global) and the MTN PoP (Nigeria). |
+| **CEK** | Content Encryption Key. The leaf-level key in the three-tier DRM key hierarchy. One CEK is generated per content item and is used to encrypt that item's media segments. |
+| **CENC** | Common Encryption. The ISO 23001-7 encryption scheme using AES-CTR mode. Required by Widevine and PlayReady DRM systems. |
+| **CMAF** | Common Media Application Format. ISO 23000-19 file format for adaptive streaming media. Allows a single set of segment files to be delivered via both HLS and DASH manifests, and to carry dual CENC + CBCS encryption for multi-DRM support. |
+| **CRDT** | Conflict-free Replicated Data Type. A data structure that allows concurrent updates across replicas without coordination and merges changes deterministically. Used for distributed counters in the Engagement Service. |
+| **DEK** | Data Encryption Key. In general cryptographic usage, a symmetric key used to encrypt data directly. Within MCSP, the CEK serves this role at the content level. |
+| **DRM** | Digital Rights Management. The category of access control technologies that restrict media playback to authorised clients with valid licenses. MCSP implements multi-DRM: Widevine, FairPlay, and PlayReady. |
+| **HLS** | HTTP Live Streaming. Apple's adaptive bitrate streaming protocol, delivered as `.m3u8` manifest files referencing `.ts` or `.fmp4` segment files. Required for playback on all iOS, macOS, and Safari clients. |
+| **HPA** | Horizontal Pod Autoscaler. A Kubernetes controller that scales the number of pod replicas in a deployment based on observed CPU/memory utilisation or custom metrics (e.g., Kafka consumer lag). |
+| **HSM** | Hardware Security Module. A tamper-resistant physical device that generates and stores cryptographic keys. MCSP uses HSMs to hold the Root Master Encryption Key (MEK) for the DRM key hierarchy. |
+| **KEK** | Key Encryption Key. The intermediate tier in the DRM key hierarchy. KEKs are stored in the KMS (not the HSM directly) and are encrypted under the MEK. Each KEK covers a content category. |
+| **KMS** | Key Management Service. The cloud-managed key store (e.g., AWS KMS or GCP CMEK) that holds Key Encryption Keys (KEKs). KMS calls are made by the Playback Service's license callback to decrypt the CEK for a given content item. |
+| **MEK** | Master Encryption Key. The root-tier key in the three-tier DRM hierarchy. Stored only in the HSM. Used to encrypt KEKs. Never exposed in software. |
+| **MPEG-DASH** | Moving Picture Experts Group Dynamic Adaptive Streaming over HTTP. The ISO standard adaptive streaming protocol, delivered as `.mpd` manifest files. Used for all non-iOS clients. |
+| **mTLS** | Mutual TLS. A variant of TLS where both the client and server authenticate each other with certificates. Enforced by Istio as the service mesh for all inter-service calls within the MCSP cluster. |
+| **NDPR** | Nigeria Data Protection Regulation. The primary data privacy law of Nigeria (2019). Requires that personally identifiable information and locally produced media content for Nigerian users be stored within Nigerian jurisdiction. |
+| **PAM** | Privileged Access Management. A security design pattern (and category of tooling) that manages, controls, and audits access by privileged users to production systems. Implemented in the Admin Control Plane via the separate admin cluster. |
+| **PSSH** | Protection System Specific Header. A box in the CMAF `init` segment that carries DRM-system-specific information (key IDs, licence acquisition URL) for a specific DRM provider. Dual-encrypted CMAF init segments contain one PSSH box per supported DRM system. |
+| **RPE** | Residency Policy Enforcer. The MCSP component and design pattern responsible for ensuring that Nigeria-resident content is stored in the `af-south-1` AWS region and is not replicated to global buckets. Enforced at the IAM layer (see [ADR-003](/decisions/adr-003-nigeria-residency-iam)). |
+| **VPA** | Vertical Pod Autoscaler. A Kubernetes controller that recommends (and optionally applies) adjusted CPU and memory request/limit values for pods based on observed usage history. Used for stateful workloads where horizontal scaling is complex. |

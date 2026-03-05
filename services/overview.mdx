@@ -1,0 +1,62 @@
+---
+title: Services Overview
+sidebarTitle: Overview
+description: Overview of all application-layer microservices in MCSP, their roles, and how they relate to the platform's functional domains.
+icon: cubes
+---
+
+## Application Layer Services
+
+All MCSP application services are stateless microservices deployed on Kubernetes. Session state is externalised to Redis; persistent state is held in Postgres. Services communicate synchronously via REST/gRPC for user-facing queries and asynchronously via Kafka for all stateful domain transitions.
+
+<CardGroup cols={2}>
+  <Card title="User & Auth Service" icon="user-lock" href="/services/auth-service">
+    OAuth2/JWT issuance, session management, 2FA, RBAC enforcement.
+  </Card>
+  <Card title="Upload Service" icon="cloud-arrow-up" href="/services/upload-service">
+    Presigned URL generation, upload session management, draft saving, pipeline trigger.
+  </Card>
+  <Card title="Content Service" icon="film" href="/services/content-service">
+    Content metadata CRUD, visibility management, publication status, search indexing.
+  </Card>
+  <Card title="Playback Service" icon="play" href="/services/playback-service">
+    Manifest URL generation, entitlement checks, DRM pre-auth, resume position lookup.
+  </Card>
+  <Card title="Engagement Service" icon="heart" href="/services/engagement-service">
+    Likes, comments, shares, view counts, watch history, playlists, creator subscriptions.
+  </Card>
+  <Card title="Subscription Service" icon="credit-card" href="/services/subscription-service">
+    Subscription lifecycle state machine, plan management, billing coordination.
+  </Card>
+  <Card title="Notification Service" icon="bell" href="/services/notification-service">
+    Push, email, and in-app notification dispatch for creator and viewer events.
+  </Card>
+  <Card title="Creator Dashboard" icon="chart-line" href="/services/creator-dashboard">
+    Analytics, revenue data, payout settings, audience insights.
+  </Card>
+  <Card title="Admin Control Plane" icon="screwdriver-wrench" href="/services/admin-control-plane">
+    User lifecycle management, moderation workflow, residency policy administration, audit access.
+  </Card>
+</CardGroup>
+
+---
+
+## Service Characteristics
+
+| Service | RPS Class | State | Primary Database | Kafka Topics Produced |
+|---|---|---|---|---|
+| User & Auth | High | Stateless | Postgres + Redis | — |
+| Upload | Medium | Stateless | Postgres + Redis | `media.upload.initiated` |
+| Content | High | Stateless | Postgres + Elasticsearch | `media.published` |
+| Playback | Very High | Stateless | Postgres + Redis | — |
+| Engagement | Very High | Stateless | Postgres + Redis | `user.engagement.events`, `engagement.subscription.changed` |
+| Subscription | Medium | Stateless | Postgres | — |
+| Notification | Medium | Stateless | Postgres | — |
+| Creator Dashboard | Low–Medium | Stateless | Postgres + TimescaleDB | — |
+| Admin Control Plane | Low | Stateless | Postgres + Audit Store | — |
+
+---
+
+## Failure Isolation Principle
+
+Each service is independently circuit-broken. A failure in the Recommendation engine, Notification Service, or Creator Dashboard must not degrade the Playback Service. All inter-service synchronous calls are wrapped in circuit breakers with configurable trip thresholds. The Playback Service has the highest availability requirement — it maintains a 3-replica minimum with a dedicated node pool.

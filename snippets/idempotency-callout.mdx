@@ -1,0 +1,3 @@
+<Note>
+  **Idempotency is mandatory for all async workers.** Before executing any operation, every Kafka consumer checks a Redis-backed idempotency store keyed on `{topic}:{partition}:{offset}`. Processed offsets expire after 24 hours. Billing operations additionally pass processor-issued idempotency keys to Paystack/Stripe.
+</Note>

@@ -1,0 +1,3 @@
+<Warning>
+  **Audit log writes are synchronous and write-path critical.** Unlike fire-and-forget telemetry, audit log write failures are surfaced back to the calling service. The audit store uses an append-only schema — no `DELETE` or `UPDATE` is permitted by any application principal.
+</Warning>

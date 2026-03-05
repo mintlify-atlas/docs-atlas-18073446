@@ -1,0 +1,86 @@
+---
+title: Admin Control Plane
+sidebarTitle: Admin Control Plane
+description: User lifecycle management, content moderation workflow, residency policy administration, ad campaign management, and audit log access.
+icon: screwdriver-wrench
+---
+
+import AuditLog from '/snippets/audit-log-callout.mdx'
+import ZeroTrust from '/snippets/zero-trust-callout.mdx'
+
+## Purpose
+
+The Admin Control Plane is the operational nerve centre for MCSP. It runs in a physically separate Kubernetes cluster from the data plane — admin operations cannot interfere with viewer streaming even under catastrophic misconfiguration. All actions performed via the control plane write to the immutable audit log. Admin access requires Platform Admin role; human reviewers access only the Moderation Dashboard subset.
+
+<ZeroTrust />
+
+---
+
+## Responsibilities
+
+| Domain | Detail |
+|---|---|
+| **User lifecycle management** | Suspend, ban, or reinstate user accounts. All actions are audit-logged with actor, reason, and timestamp. Account suspension immediately invalidates active sessions via Redis TTL forced expiry. |
+| **Content moderation workflow** | Surfaces flagged content queue to human moderators. Moderators approve (restore), remove (confirm takedown), or escalate. Each decision is audit-logged. The control plane makes decisions; the Content Service executes them. |
+| **Residency policy administration** | Platform Admins set organisation-level residency defaults and can revoke incorrectly granted residency decisions (within a restricted audit-logged exception workflow). |
+| **Ad campaign management** | CRUD for ad campaigns: targeting criteria, creative assets, schedule, budget. Ad campaign configuration consumed by the Ad Server at playback time. |
+| **Subscription plan management** | Create, modify, and retire subscription plans. Active subscribers are not automatically migrated on plan changes — an explicit migration workflow is required. |
+| **Audit log access** | Platform Admins can read (but not modify) audit log records. Export to CSV for compliance reporting and third-party audit engagements. |
+| **Platform analytics** | Aggregate platform-level metrics: DAU/MAU, total streams, revenue, moderation queue depth, storage tier distribution. Read-only — sourced from analytics pipeline. |
+
+---
+
+## API Surface
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/admin/users/{userId}/suspend` | Platform Admin | Suspend a user account |
+| `POST` | `/api/v1/admin/users/{userId}/ban` | Platform Admin | Permanently ban a user |
+| `GET` | `/api/v1/admin/moderation/queue` | Platform Admin / Moderator | Fetch pending moderation items |
+| `POST` | `/api/v1/admin/moderation/{itemId}/decision` | Platform Admin / Moderator | Submit moderation decision (APPROVE/REMOVE/ESCALATE) |
+| `GET` | `/api/v1/admin/audit-log` | Platform Admin | Query audit log records |
+| `POST` | `/api/v1/admin/plans` | Platform Admin | Create subscription plan |
+| `PATCH` | `/api/v1/admin/plans/{planId}` | Platform Admin | Modify subscription plan |
+| `GET` | `/api/v1/admin/analytics/platform` | Platform Admin | Platform-level aggregate metrics |
+
+---
+
+## Data Owned
+
+| Store | Content |
+|---|---|
+| **Postgres (control plane DB)** | `moderation_queue`, `moderation_decisions`, `admin_actions`, `subscription_plans`, `ad_campaigns` |
+| **Audit Store (append-only)** | All admin actions, moderation decisions, residency decisions, financial transactions |
+
+---
+
+## Kafka Topics
+
+The Admin Control Plane does not produce domain events. Its state changes trigger synchronous calls to downstream services (Content Service for takedowns, Auth Service for session revocation).
+
+<AuditLog />
+
+---
+
+## Failure Behaviour
+
+| Failure | Behaviour |
+|---|---|
+| **Control plane unavailable** | Viewer streaming continues unaffected (separate cluster). New moderation decisions cannot be entered. Flagged content remains in its current state (HELD or visible) until recovery. |
+| **Moderation pipeline failure** | Flagged content enters a holding queue and is not auto-approved. Human review resumes on recovery. |
+| **Audit store write failure** | Action that triggered the write is rolled back (not committed). The audit store write is synchronous and write-path critical — audit guarantees are not degraded silently. |
+
+---
+
+## Separation from Data Plane
+
+The Admin Control Plane is the concrete implementation of [Principle 9 — Separation of Control Plane and Data Plane](/overview/design-principles). Cross-plane calls from the control plane to the streaming data plane are made through well-defined, rate-limited internal APIs — the control plane cannot directly write to data-plane databases or call media pipeline services.
+
+---
+
+## Related Pages
+
+- [Security Design](/infrastructure/security-design)
+- [Content Moderation Pipeline](/pipelines/content-moderation)
+- [Data Residency](/infrastructure/data-residency)
+- [Kafka Topics Reference](/reference/kafka-topics)

@@ -1,0 +1,63 @@
+---
+title: Introduction
+sidebarTitle: Introduction
+description: MTN Cloud Streaming Platform — engineering documentation hub for architects, platform engineers, and technical reviewers.
+icon: house
+---
+
+import ObservabilityGate from '/snippets/observability-gate-callout.mdx'
+
+# MTN Cloud Streaming Platform
+
+MCSP is a large-scale, multi-tenant SaaS streaming service built exclusively on MTN cloud infrastructure. It delivers video and audio content to Nigerian domestic audiences and the international diaspora under a dual-tier monetisation model: ad-supported free viewing and an ad-free paid subscription.
+
+<CardGroup cols={2}>
+  <Card title="Platform at a Glance" icon="layer-group" href="/overview/platform-at-a-glance">
+    Scale assumptions, capability matrix, multi-tenant model, and revenue streams.
+  </Card>
+  <Card title="Design Principles" icon="compass-drafting" href="/overview/design-principles">
+    The 12 architecture principles governing every engineering decision on MCSP.
+  </Card>
+  <Card title="Solution Architecture" icon="diagram-project" href="/architecture/high-level-diagram">
+    High-level diagram, layer breakdown, and communication model.
+  </Card>
+  <Card title="Infrastructure & Security" icon="shield-halved" href="/architecture/infrastructure-network">
+    Network topology, security design, scalability strategy, and disaster recovery.
+  </Card>
+  <Card title="Services" icon="cubes" href="/services/overview">
+    Per-service documentation: responsibilities, API surface, data owned, and failure behaviour.
+  </Card>
+  <Card title="Pipelines" icon="arrow-progress" href="/pipelines/media-ingestion">
+    End-to-end system flow documentation for every major platform pipeline.
+  </Card>
+  <Card title="Architecture Decisions" icon="scale-balanced" href="/decisions/overview">
+    Architecture Decision Records (ADRs) with context, decision rationale, and tradeoffs.
+  </Card>
+  <Card title="Reference" icon="book" href="/reference/glossary">
+    Glossary, Kafka topic catalogue, storage model, bandwidth profile, and risk register.
+  </Card>
+</CardGroup>
+
+---
+
+## Document Scope
+
+This documentation set is the authoritative technical reference for MCSP v1.0. It is written for:
+
+- **Platform engineers** onboarding to the codebase and infrastructure
+- **Architects** evaluating design decisions and extension points
+- **Security reviewers** conducting cloud security and compliance audits
+- **Technical investors** or partners conducting due diligence
+
+<ObservabilityGate />
+
+---
+
+## Version
+
+| Attribute | Value |
+|---|---|
+| Document version | 1.0 |
+| Classification | Confidential |
+| Audiences | CTO Review · Cloud Security Audit · Investor Due Diligence · Engineering Onboarding · Cloud Compliance Assessment |
+| Last updated | March 2026 |

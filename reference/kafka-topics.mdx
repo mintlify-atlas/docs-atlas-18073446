@@ -1,0 +1,201 @@
+---
+title: Kafka Topic Catalogue
+sidebarTitle: Kafka Topics
+description: Complete reference for all Kafka topics in the MTN Cloud Streaming Platform, including producers, consumers, partition strategy, retention policy, and message payload schema.
+icon: diagram-project
+---
+
+## Topic Catalogue
+
+All topics use JSON message payloads unless specified otherwise. All messages carry a minimum envelope of `{ "event_id": "<uuid>", "timestamp": "<iso8601>", "source_service": "<service>", "payload": { ... } }`.
+
+Topics prefixed `internal.` are consumed only within the same service and are not part of the inter-service contract.
+
+---
+
+### `media.upload.initiated`
+
+| Property | Value |
+|---|---|
+| **Producer** | Upload Service |
+| **Consumers** | Transcoding Worker |
+| **Partitions** | 12 (keyed on `upload_session_id`) |
+| **Retention** | 7 days |
+| **Trigger** | Final segment of a multipart upload confirmed |
+
+**Payload fields:**
+- `upload_session_id` (string) — Unique upload session identifier
+- `content_id` (string) — Pre-assigned content record ID
+- `creator_id` (string)
+- `s3_raw_key` (string) — S3 key of the raw uploaded file
+- `residency` (string) — `GLOBAL` or `NG`
+- `content_type` (string) — `VIDEO` or `AUDIO`
+
+---
+
+### `media.transcoded`
+
+| Property | Value |
+|---|---|
+| **Producer** | Transcoding Worker |
+| **Consumers** | DRM Packaging Worker, Moderation Worker |
+| **Partitions** | 24 (keyed on `content_id`) |
+| **Retention** | 7 days |
+| **Trigger** | All transcoding renditions completed successfully |
+
+**Payload fields:**
+- `content_id` (string)
+- `renditions` (array) — List of `{ resolution, bitrate, s3_key }` for each output
+- `audio_tracks` (array) — List of `{ bitrate, lang, s3_key }`
+- `duration_seconds` (integer)
+
+---
+
+### `media.drm.packaged`
+
+| Property | Value |
+|---|---|
+| **Producer** | DRM Packaging Worker |
+| **Consumers** | Content Service |
+| **Partitions** | 12 (keyed on `content_id`) |
+| **Retention** | 7 days |
+| **Trigger** | CMAF dual-encryption packaging complete and manifests written to S3 |
+
+**Payload fields:**
+- `content_id` (string)
+- `hls_manifest_url` (string) — CDN-relative path to `.m3u8`
+- `dash_manifest_url` (string) — CDN-relative path to `.mpd`
+- `cek_id` (string) — Key store reference for the CEK
+
+---
+
+### `media.published`
+
+| Property | Value |
+|---|---|
+| **Producer** | Content Service |
+| **Consumers** | Notification Service, ML Event Collector (for ANN index update), Creator Dashboard |
+| **Partitions** | 12 (keyed on `content_id`) |
+| **Retention** | 30 days |
+| **Trigger** | Content record set to `PUBLISHED` visibility state |
+
+**Payload fields:**
+- `content_id` (string)
+- `creator_id` (string)
+- `title` (string)
+- `content_type` (string)
+- `categories` (array of strings)
+- `residency` (string)
+
+---
+
+### `moderation.flagged`
+
+| Property | Value |
+|---|---|
+| **Producer** | Moderation Worker |
+| **Consumers** | Content Service (hold publication), Admin Control Plane (queue review item) |
+| **Partitions** | 6 (keyed on `content_id`) |
+| **Retention** | 30 days |
+| **Trigger** | Any automated AI moderation check returns a flag above threshold |
+
+**Payload fields:**
+- `content_id` (string)
+- `creator_id` (string)
+- `flags` (array) — List of `{ check_type, confidence_score, flagged_timestamp_start, flagged_timestamp_end }`
+- `queue_priority` (string) — `STANDARD` or `ESCALATED`
+
+---
+
+### `moderation.approved`
+
+| Property | Value |
+|---|---|
+| **Producer** | Admin Control Plane (on human reviewer approval) |
+| **Consumers** | Content Service |
+| **Partitions** | 6 (keyed on `content_id`) |
+| **Retention** | 30 days |
+| **Trigger** | Human reviewer approves a flagged content item |
+
+**Payload fields:**
+- `content_id` (string)
+- `reviewer_id` (string)
+- `decision` (string) — `APPROVED`, `AGE_GATED`, or `EDIT_REQUESTED`
+
+---
+
+### `user.engagement.events`
+
+| Property | Value |
+|---|---|
+| **Producer** | Engagement Service |
+| **Consumers** | ML Event Collector (feature store), Creator Dashboard (analytics aggregation) |
+| **Partitions** | 48 (keyed on `user_id` for ordering of per-user event stream) |
+| **Retention** | 90 days |
+| **Trigger** | Any trackable user action on content |
+
+**Payload fields:**
+- `user_id` (string)
+- `content_id` (string)
+- `creator_id` (string)
+- `event_type` (string) — `media_started`, `media_completed`, `media_liked`, `media_shared`, `media_disliked`, `media_skipped`, `media_replay`, `media_added_to_playlist`
+- `watch_duration_seconds` (integer, nullable) — populated for play events
+- `content_type` (string) — `VIDEO` or `AUDIO`
+- `session_id` (string)
+
+---
+
+### `engagement.subscription.changed`
+
+| Property | Value |
+|---|---|
+| **Producer** | Engagement Service |
+| **Consumers** | Notification Service, Creator Dashboard |
+| **Partitions** | 12 (keyed on `creator_id`) |
+| **Retention** | 30 days |
+| **Trigger** | User subscribes to or unsubscribes from a creator channel |
+
+**Payload fields:**
+- `user_id` (string)
+- `creator_id` (string)
+- `action` (string) — `SUBSCRIBED` or `UNSUBSCRIBED`
+
+---
+
+### `payment.events`
+
+| Property | Value |
+|---|---|
+| **Producer** | Billing Service |
+| **Consumers** | Subscription Service, Notification Service |
+| **Partitions** | 12 (keyed on `subscriber_id`) |
+| **Retention** | 365 days (regulatory) |
+| **Trigger** | Any completed or failed payment attempt |
+
+**Payload fields:**
+- `subscriber_id` (string)
+- `subscription_id` (string)
+- `event_type` (string) — `payment.processed` or `payment.failed`
+- `amount` (integer) — in lowest denomination (kobo for NGN, cents for USD)
+- `currency` (string) — `NGN` or `USD`
+- `processor` (string) — `PAYSTACK` or `STRIPE`
+- `processor_ref` (string) — Provider's transaction reference
+
+---
+
+### `notification.dispatch.requested`
+
+| Property | Value |
+|---|---|
+| **Producer** | Content Service, Subscription Service, Billing Service — all via Notification Service API (not directly) |
+| **Consumer** | Notification Service channels (push, email, in-app workers) |
+| **Partitions** | 12 (keyed on `user_id`) |
+| **Retention** | 3 days |
+| **Trigger** | Notification Service receives a dispatch request from any upstream service |
+
+**Payload fields:**
+- `user_id` (string)
+- `notification_type` (string) — `NEW_CONTENT`, `PAYMENT_FAILED`, `SUBSCRIPTION_EXPIRING`, `MODERATION_DECISION`, `CREATOR_MILESTONE`
+- `channels` (array) — `PUSH`, `EMAIL`, `IN_APP`
+- `template_id` (string)
+- `template_vars` (object)

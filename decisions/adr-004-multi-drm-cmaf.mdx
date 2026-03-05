@@ -1,0 +1,90 @@
+---
+title: "ADR-004: Multi-DRM via CMAF Dual Encryption"
+sidebarTitle: ADR-004 Multi-DRM CMAF
+description: Decision to use CMAF with CENC+CBCS dual encryption profiles to serve all DRM ecosystems (Widevine, FairPlay, PlayReady) from a single segment set.
+icon: lock
+---
+
+<Info>
+  **Status: Accepted** — Adopted for MCSP v1.0. No superseding decision.
+</Info>
+
+## Context
+
+The platform must support premium DRM-protected playback across at minimum five client environments:
+
+| Ecosystem | DRM system | Required encryption |
+|---|---|---|
+| Android + Chrome + ChromeOS | Widevine | CENC (AES-CTR) |
+| iOS + macOS + Safari + tvOS | FairPlay | CBCS (AES-CBC) |
+| Windows + Edge | PlayReady | CENC (AES-CTR) |
+| Smart TV (Samsung, LG) | PlayReady | CENC (AES-CTR) |
+| Xbox | PlayReady | CENC (AES-CTR) |
+
+Apple's FairPlay exclusively supports CBC-mode encryption (CBCS profile). Google's Widevine and Microsoft's PlayReady require CTR-mode encryption (CENC profile). These are not negotiable outside each vendor's specification.
+
+The original content formats available at-completion time of DRM packaging are the same HLS/DASH CMAF segments — only the encryption applied to them differs between DRM ecosystems. There were two approaches to serving all ecosystems:
+
+1. **Per-DRM content sets**: Store and serve a separate set of encrypted segments for each DRM standard — three copies of every content item.
+2. **Single CMAF set with dual encryption**: CMAF's architecture allows a segment to carry both CENC and CBCS encryption simultaneously (ISO 23001-7). A single physical file carries both `pssh` boxes and is valid for both ecosystems.
+
+---
+
+## Decision
+
+Use **CMAF segments with dual CENC+CBCS encryption** packaged by Shaka Packager. A single set of segment files is stored in S3 and served from the CDN to all client ecosystems. The init segment contains both the Widevine/PlayReady PSSH box (CENC) and the FairPlay PSSH box (CBCS). Each client's native DRM module reads only the PSSH box it understands and ignores the other.
+
+A multi-DRM license server (Axinom or EZDRM) handles license issuance for all three DRM systems from a single key service integration. The key store holds a single Content Encryption Key (CEK) per content item — not one per DRM system.
+
+---
+
+## Alternatives Considered
+
+<AccordionGroup>
+  <Accordion title="Alternative A: Per-DRM content sets (3× storage)">
+    **Description:** Package and store three separate encrypted segment sets per content item — one CENC (for Widevine/PlayReady) and one CBCS (for FairPlay). Route clients to the correct set based on detected DRM system.
+
+    **Why rejected:** Triples storage cost per content item. Triples CDN origin file management (cache invalidation, segment path management). Packaging pipeline run time increases proportionally. The CMAF dual-encryption approach is the industry-standard solution to this exact problem and eliminates the duplication entirely.
+  </Accordion>
+  <Accordion title="Alternative B: HLS-only delivery (FairPlay-first)">
+    **Description:** Deliver all content as HLS with CBCS encryption. Widevine and PlayReady clients would not be natively supported.
+
+    **Why rejected:** Excludes Android, Chrome desktop, Windows native players, and Smart TVs from premium content access. These represent a significant share of the target audience. HLS-only is viable for Apple-ecosystem-first products with a different audience profile.
+  </Accordion>
+  <Accordion title="Alternative C: Unencrypted plus CDN token-only protection">
+    **Description:** Distribute unencrypted segments but protect access with signed CDN URLs and IP binding. No DRM.
+
+    **Why rejected:** Unacceptable for premium content. A leaked CDN URL provides unimpeded access to unencrypted segments with no playback restriction. Content licensing agreements (music rights, sports rights) will require DRM as a contractual condition.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Consequences
+
+- Single segment set reduces storage cost and eliminates per-DRM routing complexity.
+- Shaka Packager is the packager of choice — its open-source implementation has verified support for dual-CMAF and is maintained by Google with Widevine integration.
+- Multi-DRM provider introduces an external dependency in the license acquisition path. If the provider is unreachable, all DRM license acquisition fails. This is mitigated by the provider's SLA and the Playback Service's retry behaviour.
+- Widevine L3 and PlayReady SL2000 (software DRM) do not prevent screen capture on desktop. Visual watermarking is applied as a forensic mitigation. See [DRM & Content Security](/pipelines/drm-content-security) for details.
+
+---
+
+## Tradeoffs
+
+| Dimension | Per-DRM sets | CMAF Dual Encryption (selected) |
+|---|---|---|
+| Storage usage | 3× per content item | 1× |
+| Packaging complexity | 3 separate packager runs | Single packager run (dual output) |
+| CDN routing | Per-DRM origin paths | Single path, all clients |
+| Key management | One CEK per DRM per item | One CEK per item |
+| L3/SL2000 capture risk | Same | Same (hardware limitation, not packaging) |
+| Client compatibility | Full (3 sets) | Full (single set, all PSSH boxes) |
+
+---
+
+## Related
+
+- [DRM & Content Security Pipeline](/pipelines/drm-content-security)
+- [Adaptive Streaming Pipeline](/pipelines/adaptive-streaming)
+- [Security Design](/infrastructure/security-design)
+- [Playback Service](/services/playback-service)

@@ -1,0 +1,89 @@
+---
+title: Platform at a Glance
+sidebarTitle: Platform at a Glance
+description: Core capabilities, scale targets, multi-tenant model, and revenue structure for MCSP v1.
+icon: layer-group
+---
+
+import ResidencyCallout from '/snippets/residency-immutable-callout.mdx'
+
+## Core Capabilities
+
+MCSP spans 12 functional domains. Video and audio content share the same ingestion, transcoding, DRM, CDN delivery, moderation, and monetisation infrastructure — content-type branching is applied at the pipeline level.
+
+| Domain | Capability | Scale Implication |
+|---|---|---|
+| **Content Ingestion** | Multi-format upload (video + audio), auto-transcoding, DRM packaging | Async pipeline, elastically scaled workers |
+| **Streaming Delivery** | Adaptive bitrate via HLS/DASH for video; HLS audio-only and MPEG-DASH for audio | Multi-region CDN, tokenised URL auth |
+| **Data Residency** | Nigeria-only residency (paid tier) enforced at storage layer | Isolated MTN Cloud zone, policy engine |
+| **User Engagement** | Likes/dislikes, comments/replies, shares, playlists, watch history, view counts, creator subscriptions | High write-volume; isolated from Content Service |
+| **Recommendations** | ML-driven personalised feed, trending, related content | Feature store, offline training, online inference |
+| **Monetisation** | Ads (pre/mid-roll), subscriptions, creator revenue share in NGN/USD | Payment gateway, billing engine, FX handling |
+| **DRM / Security** | Widevine + FairPlay + PlayReady, playback encryption, upload scan | License server fleet, key management |
+| **Moderation** | AI auto-flagging, human review queue, creator appeals | Near-real-time pipeline, ops team required |
+| **Storage Tiering** | Automated hot/cold/edge transitions based on view frequency | Tiering engine, CDN invalidation hooks |
+| **Admin / Ops** | Central dashboard, audit logs, user/content management | RBAC, immutable audit store |
+
+---
+
+## Scale Assumptions — Year 1
+
+| Parameter | Target |
+|---|---|
+| Registered users | 5 million |
+| Monthly active users (MAU) | 2 million |
+| Peak concurrent streams | 150,000 |
+| Content uploads per day | 10,000 videos / 5,000 audio |
+| Average video file size | 2 GB (pre-transcoding) |
+| Average audio file size | 80 MB (pre-transcoding) |
+| Total storage | ~8 PB (all tiers combined) |
+| CDN egress (peak hour) | ~1.5 Tbps |
+| API requests per second (peak) | 50,000 RPS |
+
+See [Appendix A — Traffic Scale](/reference/bandwidth-profile) and [Appendix B — Storage Model](/reference/storage-model) for Year 1 and Year 3 projections.
+
+---
+
+## Multi-Tenant Model
+
+MCSP is a multi-tenant platform with four role tiers:
+
+| Role | Isolation Boundary | Key Privilege |
+|---|---|---|
+| **Viewer** | Own account only | Stream content, manage own data |
+| **Creator** | Own channel and content | Upload, manage, monetise content |
+| **Organisation Admin** | Organisation tenancy | Manage org members, set org-wide residency policy |
+| **Platform Admin** | Full platform | Moderate content, manage users, audit access |
+
+Tenants are logically isolated at the application layer via row-level security in relational stores and namespace partitioning in object storage. Organisation accounts can enforce data residency policies across all members of their tenancy via the Residency Policy Engine.
+
+<ResidencyCallout />
+
+---
+
+## Revenue Model
+
+MCSP generates revenue across three streams:
+
+1. **Ad revenue** from the free tier — shared between MTN and creators at a configurable ratio (default: 55% creator / 45% MTN)
+2. **Subscription fees** — recurring charges for ad-free plans and the Nigeria Residency plan
+3. **Nigeria Residency premium** — charged to creators and organisations electing MTN Cloud data sovereignty
+
+Creator payouts are processed in NGN (via Paystack) or USD (via Stripe) based on creator preference, with FX conversion handled at the billing layer. See [Billing & Payments](/pipelines/billing-payments) for the full subscription lifecycle and revenue share engine.
+
+---
+
+## Nigeria Data Residency — Platform Differentiator
+
+The Nigeria Data Residency feature is MCSP's strongest MTN-specific value proposition. Content flagged for residency is stored exclusively within MTN Cloud infrastructure physically located in Nigeria and is never replicated to international cloud regions.
+
+<Tip>
+  Residency is a **premium, billable feature** — not a compliance checkbox. It targets government bodies, regulated enterprises, and nationally-focused media organisations that require verifiable data sovereignty under NDPR.
+</Tip>
+
+Residency is enforced at three layers:
+- **Upload** — the Residency Policy Engine intercepts storage routing decisions
+- **Storage** — cloud IAM bucket policy explicitly denies replication outside the Nigeria region
+- **Audit** — every residency decision writes an immutable record to the append-only audit log
+
+See [Data Residency Architecture](/infrastructure/data-residency) for the complete isolation model.

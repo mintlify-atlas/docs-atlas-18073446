@@ -1,0 +1,94 @@
+---
+title: Storage Model
+sidebarTitle: Storage Model
+description: Complete storage tier definitions, per-tier specifications, access-frequency thresholds, retrieval behaviour, and cost model summary for MCSP media and data storage.
+icon: database
+---
+
+## Storage Architecture Overview
+
+MCSP uses a multi-tier object storage model for media assets and separate purpose-fitted databases for operational data. All media assets reside in S3-compatible object storage. Nigeria-resident content is logically and physically isolated in a separate bucket with a distinct IAM boundary.
+
+---
+
+## Object Storage Tiers
+
+| Tier name | S3 class | Region | Use case | Retrieval latency |
+|---|---|---|---|---|
+| **Hot** | S3 Standard | `us-east-1` (global default) | Actively played content; content < 30 days old | Milliseconds (CDN cache); seconds (origin miss) |
+| **Cold** | S3 Standard-IA | `us-east-1` | Infrequently accessed content (< 100 views/30 days) | Milliseconds (CDN); first-byte slightly higher at origin |
+| **Archive** | S3 Glacier Flexible Retrieval | `us-east-1` | Long-tail content (< 10 views/90 days) | 1–12 hours restore time required before playback |
+| **Nigeria Hot** | S3 Standard | `af-south-1` | All Nigeria-resident content regardless of access frequency | Milliseconds (MTN PoP); seconds (origin miss) |
+
+<Warning>
+  Nigeria-resident content is **never** moved to Cold or Archive tiers. The tiering engine explicitly excludes content with `residency: NG` from all tier transition evaluations. This is a hard constraint from [ADR-003](/decisions/adr-003-nigeria-residency-iam).
+</Warning>
+
+---
+
+## Tiering Thresholds
+
+The automated tiering engine runs daily at 02:00 UTC. Thresholds are configurable in the tiering engine configuration store.
+
+| Current tier | Condition | Action |
+|---|---|---|
+| Hot → Cold | `view_count_30d < 100` AND content older than 14 days | Move object to Standard-IA |
+| Cold → Archive | `view_count_90d < 10` | Move object to Glacier Flexible Retrieval |
+| Archive → Hot (on-demand restore) | Client requests archived content | Initiate Glacier restore; serve HTTP 202 with `Retry-After` |
+| Any tier — Safety net | Object not transitioned by engine within 180 days | S3 Lifecycle rule transitions to Standard-IA at 180 days, Glacier at 365 days |
+
+---
+
+## Media Object Naming Convention
+
+All S3 keys follow the pattern:
+
+```
+{residency}/{content_id}/{rendition_id}/{segment_number}.{ext}
+```
+
+Examples:
+- `global/a1b2c3d4/1080p_6000kbps/seg_00001.cmfv` — Video segment
+- `ng/e5f6g7h8/audio_128kbps/seg_00001.cmfa` — Nigeria-resident audio segment
+- `global/a1b2c3d4/manifest.mpd` — DASH manifest
+- `global/a1b2c3d4/manifest.m3u8` — HLS master manifest
+
+---
+
+## Operational Database Summary
+
+| Store | Engine | Tier | What it owns |
+|---|---|---|---|
+| **User & Auth DB** | PostgreSQL multi-AZ (`us-east-1`) | Hot | User accounts, sessions (non-cached), RBAC roles, 2FA secrets |
+| **Content DB** | PostgreSQL multi-AZ (`us-east-1`) | Hot | Content records, metadata, publish status, visibility, moderation state |
+| **Subscription DB** | PostgreSQL multi-AZ (`us-east-1`) | Hot | Subscription state, plan, billing dates, entitlement flags |
+| **Billing Ledger DB** | PostgreSQL multi-AZ (`us-east-1`) | Hot | Immutable billing records, payout records, FX rate snapshots |
+| **Engagement Cache** | Redis Cluster 6-shard | Hot | Real-time counters (likes, views, comments), watch history, playlists |
+| **Session Store** | Redis Cluster | Hot | JWT session state, idempotency keys, upload session state |
+| **Analytics DB** | TimescaleDB / ClickHouse | Warm | Time-series aggregates: view counts, engagement rates, revenue metrics |
+| **Search Index** | Elasticsearch | Warm | Full-text content search, creator search |
+| **Notification State** | PostgreSQL | Hot | Notification preferences, delivery receipts |
+| **Nigeria User Replica** | PostgreSQL (read replica in `af-south-1`) | Hot | Read replica of user/auth data for Nigeria users — write path always goes to `us-east-1` primary |
+
+---
+
+## Year 3 Storage Projections
+
+| Asset type | Per-item size | Item count | Total |
+|---|---|---|---|
+| Raw uploads (pre-transcode) | ~2 GB average | 3M | ~6 PB (short-lived; deleted after transcoding) |
+| Encoded video (all renditions, per item) | ~1.5 GB | 3M | ~4.5 PB |
+| Encoded audio (all bitrates, per item) | ~50 MB | 3M | ~150 TB |
+| Thumbnails and preview images | ~5 MB | 3M | ~15 TB |
+| DRM manifests and init segments | ~1 MB | 3M | ~3 TB |
+| Nigeria-resident subset (10% of catalogue) | As above × 10% | 300K | ~450 TB (always hot) |
+| **Total operational media storage** | | | **~5.1 PB** |
+
+---
+
+## Related Pages
+
+- [Data Residency](/infrastructure/data-residency)
+- [Scalability & Resilience](/infrastructure/scalability-resilience)
+- [ADR-005 — Storage Tiering Engine](/decisions/adr-005-storage-tiering-engine)
+- [ADR-003 — Nigeria Residency](/decisions/adr-003-nigeria-residency-iam)

@@ -1,0 +1,152 @@
+---
+title: DRM & Content Security
+sidebarTitle: DRM & Content Security
+description: Multi-DRM system design, CMAF dual-encryption model, license server interaction, key hierarchy, playback entitlement enforcement, and watermarking.
+icon: lock
+---
+
+import ZeroTrustCallout from '/snippets/zero-trust-callout.mdx'
+
+## Overview
+
+All premium content is protected by a multi-DRM system using CMAF (Common Media Application Format) with dual-encryption profiles. A single set of encrypted segments serves all clients — no per-DRM content duplication. DRM key management is governed by a three-tier key hierarchy enforced through the KMS + HSM layer. Playback requires a valid DRM license bound to an authenticated session.
+
+<Info>
+  **Architecture note:** CMAF CENC+CBCS dual-encryption was selected to serve iOS (FairPlay, CBCS only), Android/Chrome (Widevine, CENC), and desktop/Smart TV (PlayReady, CENC) from a single segment set. See [ADR-004](/decisions/adr-004-multi-drm-cmaf) for the full decision record.
+</Info>
+
+---
+
+## DRM System Comparison
+
+| Property | Widevine | FairPlay | PlayReady |
+|---|---|---|---|
+| **Owner** | Google | Apple | Microsoft |
+| **Encryption profile** | CENC (CTR mode) | CBCS (CBC mode) | CENC (CTR mode) |
+| **Platform** | Android, Chrome, ChromeOS | iOS, macOS, Safari, tvOS | Windows, Xbox, Smart TV (Samsung/LG) |
+| **Security levels** | L1 (hardware), L2, L3 (software) | Not tiered (hardware-backed on modern devices) | SL2000, SL3000 (hardware) |
+| **License server** | Multi-DRM provider (Axinom or EZDRM) | Multi-DRM provider | Multi-DRM provider |
+| **CDN token binding** | Via license request URL token | Via license request URL token | Via license request URL token |
+
+---
+
+## CMAF Dual-Encryption Model
+
+Shaka Packager produces CMAF segments encrypted with both CENC (CTR) and CBCS (CBC) profiles simultaneously. A single `init` segment contains both `pssh` boxes (one per DRM system). The CDN delivery layer serves the same byte-identical files to all clients.
+
+| Segment file | CENC (for Widevine/PlayReady) | CBCS (for FairPlay) |
+|---|---|---|
+| Video init segment | ✅ PSSH box | ✅ PSSH box |
+| Video segments | ✅ CTR-encrypted | ✅ CBC-encrypted |
+| Audio segments | ✅ CTR-encrypted | ✅ CBC-encrypted |
+
+---
+
+## Key Hierarchy
+
+Keys are managed in a three-tier hierarchy:
+
+| Tier | Key | Storage |
+|---|---|---|
+| **Root** | Master Encryption Key (MEK) | HSM only — never in software |
+| **Intermediate** | Key Encryption Key (KEK) — per-content-category | KMS (AWS KMS or GCP CMEK) — encrypted under MEK |
+| **Leaf** | Content Encryption Key (CEK) — per content item | Encrypted under KEK, stored in key store DB |
+
+Key rotation schedule:
+- MEK: Annual rotation, HSM-enforced
+- KEK: Per-content-category, rotated on new content batch or on compromise event
+- CEK: Per content item — generated fresh on DRM packaging, never reused across content items
+
+---
+
+## License Acquisition Flow
+
+<Steps>
+  <Step title="Client encounters PSSH box">
+    On stream load, the client's DRM module detects the encrypted init segment and extracts the relevant PSSH box (Widevine, FairPlay, or PlayReady).
+  </Step>
+  <Step title="Client calls Playback Service">
+    Client calls `GET /api/v1/playback/token/{contentId}` with a valid session JWT. Playback Service validates the entitlement: subscription is active, content is accessible in user's region, user has not exceeded concurrent stream limit.
+  </Step>
+  <Step title="Signed license URL issued">
+    Playback Service generates a signed, expiring license acquisition URL (TTL: 30 seconds) bound to the user's session and content ID. The URL is returned to the client.
+  </Step>
+  <Step title="License request">
+    Client's DRM module sends the license challenge to the multi-DRM provider (Axinom or EZDRM) via the signed URL. License request includes the PSSH data and the platform's signed token.
+  </Step>
+  <Step title="License generation">
+    The multi-DRM provider calls the Playback Service's key retrieval callback. Playback Service retrieves the CEK from the key store (decrypting with the KEK via KMS), returns it to the provider. Provider issues the DRM license.
+  </Step>
+  <Step title="License delivery">
+    License is returned to the client. The DRM module decrypts the segments in the protected media pipeline. Playback begins.
+  </Step>
+  <Step title="License expiry and renewal">
+    License TTL is 4 hours. For a session exceeding this duration, the player silently re-acquires a license via the same flow. Re-acquisition requires a valid session JWT — expired sessions cannot renew licenses.
+  </Step>
+</Steps>
+
+---
+
+## Screen Capture Mitigation
+
+<Warning>
+  Widevine L3 (software security level) and PlayReady SL2000 do **not** prevent screen capture on desktop browsers and mid-range Android devices. Hardware-backed TEE (L1/SL3000) is the only reliable mechanism. The following mitigations reduce but do not eliminate the risk on L3/SL2000 devices:
+</Warning>
+
+| Mitigation | Effectiveness | Coverage |
+|---|---|---|
+| **Visual watermarking** | Forensic identification after leak — does not prevent capture | All platforms, all tiers |
+| **Session-bound watermark** | Routes leaked content to specific user session | All platforms, all tiers |
+| **Widevine L1 enforcement** | Blocks capture entirely | Mobile devices with L1 hardware (most modern Android phones) |
+| **FairPlay hardware enforcement** | Blocks capture entirely | All iOS/macOS/tvOS devices (hardware always enforced) |
+| **PlayReady SL3000** | Blocks capture entirely | Xbox, hardware-secured Smart TVs |
+| **Output protection policy** | Blocks HDMI capture adapters on Windows | Windows + PlayReady |
+
+<Tip>
+  Require Widevine L1 for premium (highest-tier) content playback on Android. L3 devices receive a notice directing them to the native app, which can enforce L1 via the Android `MediaDrm` API with `requireSecureDecoder()`.
+</Tip>
+
+---
+
+## Visual Watermarking
+
+Every video stream carries a per-session imperceptible watermark (A/B watermarking via a Forensic Watermarking service such as NAGRA or Civolution). Watermark parameters:
+
+- Embedded at segment delivery time by the CDN origin response handler
+- Watermark contains: `user_id`, `session_id`, `content_id`, `timestamp_of_first_play`
+- Watermark is invisible to the viewer and survives re-encoding, cropping, and colour-grading with > 95% recovery accuracy
+- Positive identification enables takedown requests and, where applicable, account suspension
+
+---
+
+## Kafka Topics Used
+
+The DRM pipeline produces no Kafka events as a primary producer. It is a synchronous request/response system. Upstream pipeline produces `media.drm.packaged` after Shaka Packager completes:
+
+| Topic | Direction | Purpose |
+|---|---|---|
+| `media.drm.packaged` | Consumed (by Content Service) | Signals that encrypted CMAF segments are available and content can be published |
+| `media.drm.packaged` | Produced (by Transcoding Worker) | Written after Shaka Packager completes dual-CMAF packaging |
+
+---
+
+## Failure Handling
+
+| Failure | Behaviour |
+|---|---|
+| **DRM packaging failure** | Content remains in `PACKAGING` state. Alert triggered. Packager retries automatically (up to 3 attempts). On persistent failure, content enters `PACKAGE_FAILED` and the creator is notified. |
+| **KMS unavailable** | License callback to key store fails. License issuance fails. Playback Service returns HTTP 503 with `RETRY_AFTER` header. Client retries up to 3 times. If KMS is unreachable > 5 minutes, incident declared. |
+| **Multi-DRM provider unreachable** | License acquisition fails. Client shows "Playback unavailable, try again shortly". No fallback to unencrypted delivery under any circumstance. |
+| **CEK retrieval fails (key not found)** | Indicates a data integrity issue. Playback Service returns HTTP 404. Alert triggered for immediate investigation. |
+
+<ZeroTrustCallout />
+
+---
+
+## Related Pages
+
+- [Playback Service](/services/playback-service)
+- [Media Ingestion Pipeline](/pipelines/media-ingestion)
+- [Adaptive Streaming Pipeline](/pipelines/adaptive-streaming)
+- [Security Design](/infrastructure/security-design)
+- [ADR-004 — Multi-DRM CMAF](/decisions/adr-004-multi-drm-cmaf)
