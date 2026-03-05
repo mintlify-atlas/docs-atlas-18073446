@@ -1,0 +1,139 @@
+{
+  "projectType": "saas",
+  "projectName": "MTN Cloud Streaming Platform",
+  "projectDescription": "Large-scale, multi-tenant SaaS video and audio streaming service built on MTN cloud infrastructure with Nigeria data residency.",
+  "theme": "maple",
+  "primaryColor": "#FFCC00",
+  "lightColor": "#FFE066",
+  "darkColor": "#1A4A7A",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "overview/introduction",
+              "overview/platform-at-a-glance",
+              "overview/design-principles",
+              "overview/scale-assumptions"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Solution Architecture",
+            "pages": [
+              "architecture/high-level-diagram",
+              "architecture/layer-breakdown",
+              "architecture/communication-model"
+            ]
+          },
+          {
+            "group": "Infrastructure",
+            "pages": [
+              "infrastructure/security-design",
+              "infrastructure/scalability-resilience",
+              "infrastructure/data-residency"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Services",
+        "groups": [
+          {
+            "group": "Application Layer",
+            "pages": [
+              "services/overview",
+              "services/auth-service",
+              "services/upload-service",
+              "services/content-service",
+              "services/playback-service",
+              "services/engagement-service",
+              "services/subscription-service",
+              "services/notification-service",
+              "services/creator-dashboard",
+              "services/admin-control-plane"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Pipelines",
+        "groups": [
+          {
+            "group": "System Flows",
+            "pages": [
+              "pipelines/media-ingestion",
+              "pipelines/adaptive-streaming",
+              "pipelines/ml-recommendations",
+              "pipelines/billing-payments",
+              "pipelines/content-moderation",
+              "pipelines/drm-content-security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Decisions",
+        "groups": [
+          {
+            "group": "Architecture Decision Records",
+            "pages": [
+              "decisions/overview",
+              "decisions/adr-001-event-driven-pipeline",
+              "decisions/adr-002-cdn-first-delivery",
+              "decisions/adr-003-nigeria-residency-iam",
+              "decisions/adr-004-multi-drm-cmaf",
+              "decisions/adr-005-storage-tiering-engine",
+              "decisions/adr-006-two-tower-ml",
+              "decisions/adr-007-dual-currency-payout",
+              "decisions/adr-008-saga-orchestration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Technical Reference",
+            "pages": [
+              "reference/glossary",
+              "reference/kafka-topics",
+              "reference/storage-model",
+              "reference/bandwidth-profile",
+              "reference/risk-register"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multi-tenant SaaS streaming platform",
+    "Nigeria data residency enforcement",
+    "Dual monetization (ads + subscriptions)",
+    "Multi-DRM content protection",
+    "Event-driven media processing pipeline",
+    "ML-powered recommendations",
+    "Creator revenue sharing",
+    "Automated storage tiering"
+  ],
+  "publicApiSurface": [
+    "User & Auth Service (OAuth2/JWT)",
+    "Upload Service (presigned URLs)",
+    "Content Service (metadata CRUD)",
+    "Playback Service (manifest generation)",
+    "Engagement Service (likes/comments/shares)",
+    "Subscription Service (billing lifecycle)",
+    "Notification Service (push/email dispatch)",
+    "Creator Dashboard (analytics/revenue)",
+    "Admin Control Plane (moderation/audit)"
+  ]
+}
